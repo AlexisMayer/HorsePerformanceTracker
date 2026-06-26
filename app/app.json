@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "Horse Performance Tracker",
+    "slug": "horse-performance-tracker",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "scheme": "hpt",
+    "userInterfaceStyle": "automatic",
+    "web": {
+      "output": "static"
+    },
+    "plugins": ["expo-router"]
+  }
+}
