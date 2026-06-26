@@ -116,3 +116,147 @@ lots suivants.
 | `GET /health` → 200 | smoke Vitest **et** boot réel (`{"status":"ok"}`) | ✅ |
 | `docker compose up` Postgres | `docker compose config` validé ; pull bloqué par egress | ⚠️ à confirmer en local |
 | CI | workflow `install→lint→typecheck→test→build` (Node 20) | ✅ posé |
+
+---
+
+## Lot 0.2 — Contrats `shared` · 2026-06-26
+
+Couche de contrats partagés dans `packages/shared/` : la colonne vertébrale du
+projet (Architecture §2). Référentiel/enums, types de domaine des entités socle,
+schémas Zod (DTO d'entrée/sortie), fonctions de calcul pures + tests. App et api
+**importent** d'ici — aucun type dupliqué. **Aucune** DB/Drizzle (c'est 0.3) :
+ici ce sont des types/contrats, pas le schéma.
+
+### Structure de `shared` retenue
+
+Quatre couches, une par responsabilité (dossiers/fichiers `kebab-case`,
+re-exportés par des barrels jusqu'à `src/index.ts`) :
+
+- **`enums/`** — référentiel figé (Modèle §0) : `hauteurs` (bornes 60→160,
+  pas 5 + `HAUTEURS_CM` + `estHauteurValide`), `obstacle` (`TYPES_OBSTACLE`,
+  `TYPES_OBSTACLE_SIMPLE`, `estCombinaison`), `seance` (`TYPES_SEANCE`,
+  `PROVENANCES`, `estConcours`), `compte` (`TIERS`, `TYPES_COMPTE`), `cheval`
+  (`NIVEAUX_CHEVAL`). Chaque enum = tuple `as const` + type `(typeof …)[number]`
+  → **une** liste, réutilisée par les schémas Zod (`z.enum`).
+- **`types/`** — formes de domaine des **6 entités socle** (Modèle §3/§5/§6) :
+  `Compte`, `Cheval`, `Séance`, `Obstacle` (champs combinaison inline :
+  `nombre_d_éléments`, `éléments`), `Tour`, `Contexte`. Champs techniques
+  communs via `ChampsTechniques` (`id`, `created_at`, `updated_at`).
+- **`schemas/`** — DTO Zod : `*CréerSchema` (entrée, validée au bord) +
+  `compteSortieSchema` (sortie). Types inférés (`z.infer`).
+- **`calc/`** — fonctions pures testées (Modèle §7) : `tauxObstacleSimple`,
+  `tauxCombinaison`, `sansFaute`.
+
+### Décisions tranchées (et pourquoi)
+
+- **Types d'entité ≠ DTO.** Les `types/` sont des **interfaces hand-written**
+  (forme du domaine). Les `schemas/` portent les **DTO** Zod + types inférés. La
+  cascade de l'Architecture §2 (Drizzle → types → Zod) sera complétée en 0.3 :
+  pour l'instant les types sont la **cible** à laquelle le schéma Drizzle devra
+  se conformer (alignement vérifié au niveau type, voir « alignement 0.3 »).
+- **Jamais de secret en sortie.** `Compte.password_hash` existe dans le domaine
+  mais **aucun** DTO de sortie ne l'expose. `compteSortieSchema` ne déclare pas
+  le champ ; le `.strip()` (défaut Zod) retire toute clé inconnue à la
+  projection. Prouvé deux fois : test runtime (la clé disparaît) **et** garde de
+  type (`expectTypeOf<CompteSortie>().not.toHaveProperty('password_hash')`). Le
+  DTO d'entrée reçoit un `password` **en clair** (haché côté serveur en 1.1),
+  jamais un hash.
+- **Nommage fidèle au Modèle de données.** Types `PascalCase` **français** tels
+  que listés (`Compte`, `Cheval`, `Séance`, `Obstacle`, `Tour`, `Contexte`) ;
+  champs en **`snake_case` français avec accents** (`nombre_d_éléments`,
+  `hauteur_de_référence`, `répétitions`, `created_at`…), copie 1:1 du Modèle
+  §3/§6 — c'est l'ancrage pour les colonnes Drizzle de 0.3. Les identifiants
+  accentués sont valides en TS/JS et passent lint+typecheck+build (prouvé par la
+  CI). Convention §5 « variables camelCase » comprise comme s'appliquant au code
+  impératif, pas aux **noms de champs de données** (qui suivent le Modèle/la DB).
+- **Valeurs d'enum = libellés du référentiel.** Les unions portent directement
+  les valeurs figées du Modèle §0 (`'Croix' | 'Vertical' | … | 'Combinaison'`,
+  `'Plat' | … | 'Concours'`, `'gratuit' | 'premium' | 'pro'`, provenance
+  `'live' | 'déclaratif'`). Pas de couche de traduction valeur↔libellé (pas
+  d'abstraction prématurée, §5/§7-Archi) : 0.3 pourra mapper ces valeurs sur des
+  `pgEnum` tels quels.
+- **Calcul : retour `number | null`, borné [0,1], sans plantage.** `null` =
+  non calculable (dénominateur ≤ 0 **ou** entrée invalide : non entière /
+  négative / NaN). Une entrée incohérente (fautes > efforts) est **bornée à 0**,
+  jamais négative. `tauxCombinaison` multiplie le dénominateur par
+  `nombre_d_éléments` (efforts, pas passages — §7). **Une seule** implémentation,
+  partagée app+api.
+- **Élément de combinaison = obstacle simple.** `Obstacle.éléments` est typé
+  `TypeObstacleSimple[]` (pas de combinaison imbriquée) — modélisation
+  conservatrice cohérente avec « fautes au niveau de la combinaison, jamais par
+  élément » (§0). Léger raffinement vs un « liste de types » générique.
+- **Câblage `shared` ↔ `app`/`api` (point ouvert de 0.1, maintenant posé).**
+  `@hpt/shared` ajouté en `workspace:*` aux deux ; `zod 3.25.76` (déjà au
+  lockfile, transitif d'Expo) épinglé en **dépendance** de `shared`. Résolution
+  via le champ `types`/`exports` du package (dist `.d.ts`), **pas** de mapping
+  de paths : le consommateur voit un vrai package. Conséquence : `shared` doit
+  être **bâti** avant le typecheck des consommateurs → le script racine
+  `typecheck` fait désormais `pnpm --filter @hpt/shared build && pnpm -r run
+  typecheck`. `build` (topologique) bâtit déjà `shared` en premier. `test` reste
+  autonome (les specs ne traversent pas la frontière).
+- **Import de démonstration = preuve de compilation, hors runtime de prod.**
+  `api/src/contracts.demo.ts` et `app/src/contracts.demo.ts` importent enums +
+  types + calc de `shared` et **compilent des deux côtés** (DoD). Côté api le
+  fichier est **exclu du build** (`tsconfig.build.json` → `**/*.demo.ts`) pour
+  ne pas embarquer de code mort dans `dist` (vérifié : aucun `require('@hpt/
+  shared')` dans `api/dist`). Ce ne sont **pas** des modules de domaine (créés
+  avec leurs lots).
+
+### Comment 0.3 devra s'aligner
+
+- Le schéma Drizzle des 6 entités socle (+ champs techniques) doit produire des
+  lignes **assignables** aux types de `shared/types` : mêmes noms de champs
+  (`snake_case` français), `id: string` (UUID), `created_at`/`updated_at` en
+  `timestamp` → `Date`. Les `pgEnum` doivent reprendre **exactement** les tuples
+  des `enums/` (réutiliser les constantes, ne pas les redéclarer).
+- Les champs combinaison inline (`nombre_d_éléments`, `éléments`) et les
+  optionnels (`difficulté`, `âge`, `race`, `date_modification`, contexte) sont
+  nullable côté DB. `Obstacle`/`Tour`/`Contexte` portent une FK `seance_id` ;
+  `Cheval` une FK `compte_id` ; `Séance` une FK `cheval_id`.
+- Une fois Drizzle posé, la cascade §2 pourra **dériver** les types depuis le
+  schéma ; les interfaces hand-written de 0.2 servent de spécification/garde
+  d'alignement durant la transition.
+
+### Écarts vs cadrage
+
+- **Hors socle volontairement omis** (conforme au périmètre) : `Combinaison
+  réutilisable` (2.5), `Accès invité` (4.6), `Bilan augmenté` (4.5), et la
+  **hauteur maîtrisée** §10 (agrégation → 3.2). Seul le **strict inline** de la
+  combinaison est présent.
+- **Pas de DTO de sortie explicite** pour les entités sans secret (Cheval,
+  Séance, Obstacle, Tour, Contexte) : leur projection = l'entité elle-même
+  (aucun champ sensible). Seul `Compte` a un DTO de sortie dédié, là où la règle
+  « jamais de secret » a une conséquence concrète. Les `*ModifierSchema`
+  (update/PATCH) ne sont pas posés (aucun endpoint en 0.2) — ils arriveront avec
+  les modules qui en ont besoin.
+- **Identifiants accentués** dans le code (`Séance`, `nombre_d_éléments`…) :
+  choix de fidélité au Modèle, validé par la CI. À garder en tête pour le
+  mapping Drizzle (colonnes Postgres potentiellement désaccentuées via le
+  nom de colonne explicite).
+
+### Points laissés ouverts
+
+- **`énergie` du contexte** : modélisée en échelle 1-5 (comme `ressenti_global`)
+  faute de précision dans le Modèle §3 — à confirmer (libre ? échelle ?) au lot
+  qui exploitera le contexte (feed 3.1).
+- **Interop ESM/CJS `shared` → `api` au runtime** : `shared` est ESM, `api` est
+  CommonJS. Sans incidence en 0.2 (l'import api de démonstration est exclu du
+  build et jamais exécuté). À trancher en 0.3+ quand un module api consommera
+  réellement `shared` à l'exécution (dual-build de `shared`, ou bascule api en
+  ESM/`module: node16`).
+- **Dérivation des types depuis Drizzle** (cascade §2 complète) : reportée à 0.3
+  comme prévu.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| Enums & types importables app **et** api | `contracts.demo.ts` des deux côtés, compilés au `typecheck` | ✅ vert |
+| Zod valide une entrée correcte / rejette une invalide | `schemas.test.ts` (compte, cheval, obstacle, séance, hauteur) | ✅ |
+| Aucun secret en sortie (`password_hash`) | test runtime **+** garde de type (`expectTypeOf`) | ✅ |
+| Taux « obstacle simple » correct (exemples connus) | `0.75`, `0.4`, `1`, `0` | ✅ |
+| 3 fonctions de calcul testées, cas limites inclus | dénominateur 0, valeurs incohérentes, entrées invalides | ✅ |
+| `pnpm lint` | `biome check .` | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` | Vitest — 25 (shared) + 1 (api) | ✅ 26/26 |
+| `pnpm build` | shared (tsc) + api (nest, demo exclu) + app (typecheck) | ✅ vert |

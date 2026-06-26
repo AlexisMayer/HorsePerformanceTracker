@@ -12,6 +12,7 @@
     "build": "tsc --noEmit"
   },
   "dependencies": {
+    "@hpt/shared": "workspace:*",
     "@tanstack/react-query": "^5.62.0",
     "expo": "~56.0.12",
     "expo-constants": "~56.0.18",
