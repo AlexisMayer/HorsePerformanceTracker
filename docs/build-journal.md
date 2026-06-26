@@ -260,3 +260,148 @@ re-exportés par des barrels jusqu'à `src/index.ts`) :
 | `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
 | `pnpm test` | Vitest — 25 (shared) + 1 (api) | ✅ 26/26 |
 | `pnpm build` | shared (tsc) + api (nest, demo exclu) + app (typecheck) | ✅ vert |
+
+---
+
+## Lot 0.3 — Schéma DB & migrations · 2026-06-26
+
+Réalité en base des contrats du lot 0.2 : **schéma Drizzle** des 6 entités socle
+(`Compte`, `Cheval`, `Séance`, `Obstacle`, `Tour`, `Contexte`) + leurs enums,
+**migration générée** et **appliquée** sur le Postgres local (docker-compose,
+0.1). Dernière brique des Fondations avant la Phase 1. **Aucune** couche métier,
+auth, endpoint, repository rempli ou seed — uniquement le schéma + sa migration +
+sa preuve.
+
+### Emplacement (décision tranchée)
+
+- **Schéma** : `api/src/db/schema/` — un fichier par entité (`compte.ts`,
+  `cheval.ts`, `seance.ts`, `obstacle.ts`, `tour.ts`, `contexte.ts`), plus
+  `enums.ts` (pgEnums), `champs-techniques.ts` (bag de colonnes communes) et un
+  barrel `index.ts`. C'est l'api qui **possède la DB** (Architecture §1/§3) ;
+  l'infra DB est **transverse**, donc placée dans un dossier `db/` plat, pas dans
+  un module NestJS de domaine (les modules `sessions`/`horses`/… naissent avec
+  **leurs** lots — pas d'abstraction prématurée, §6/§7-Archi).
+- **Config** : `api/drizzle.config.ts` (dialect `postgresql`, `schema` → barrel,
+  `out` → `./drizzle`, `url` depuis `DATABASE_URL` avec repli sur l'URL dev de
+  `.env.example`).
+- **Migrations** : `api/drizzle/` (SQL + `meta/` snapshot), **commitées**.
+
+### Décisions tranchées (et pourquoi)
+
+- **Enums Postgres (`pgEnum`), pas de `CHECK`** (décision figée). Chaque enum
+  **réutilise** le tuple figé de `@hpt/shared` (`TYPES_COMPTE`, `TIERS`,
+  `NIVEAUX_CHEVAL`, `TYPES_SEANCE`, `PROVENANCES`, `TYPES_OBSTACLE`) — jamais
+  redéclaré : c'est la garantie que les libellés en base sont exactement ceux du
+  domaine. Noms de **type** préfixés par l'entité (`compte_type`, `compte_tier`,
+  `cheval_niveau`, `seance_type`, `seance_provenance`, `obstacle_type`) pour
+  rester uniques. Les **valeurs** gardent leurs accents (libellés du référentiel
+  §0 : `Rivière`, `déclaratif`) ; seuls les **identifiants** sont en ASCII.
+- **Noms de colonnes physiques désaccentués**, clés TS accentuées. La **clé** de
+  l'objet Drizzle reprend le nom de champ de `shared` (accentué : `répétitions`,
+  `hauteur_de_référence`, `nombre_d_éléments`, `éléments`, `âge`, `énergie`) pour
+  l'alignement de type ; le **nom de colonne** Postgres est ASCII-folded
+  (`repetitions`, `hauteur_de_reference`, `nombre_d_elements`, `elements`, `age`,
+  `energie`) pour la portabilité et la robustesse outillage. L'alignement se joue
+  sur la clé TS, pas sur le nom physique — report anticipé par le journal 0.2.
+- **`Contexte` = table séparée** (et non des colonnes sur `seance`). Deux
+  raisons : (1) `Contexte` est une **entité** dans `shared`, portant ses propres
+  champs techniques `id/created_at/updated_at` — une table la reflète
+  directement (alignement de type) ; (2) isoler physiquement le **qualitatif** de
+  la colonne vertébrale objective matérialise les « deux couches étanches » (§1)
+  et la règle « jamais agrégé ». Cardinalité **0..1** garantie par
+  `UNIQUE(seance_id)` + `ON DELETE CASCADE`.
+- **`éléments` stocké en `jsonb`** (`$type<TypeObstacleSimple[]>`). Liste
+  **ordonnée**, courte et sans-schéma : un `jsonb` préserve l'ordre et reste
+  interrogeable, là où une table fille serait prématurée (le détail réutilisable
+  arrive au lot 2.5). `nombre_d_éléments` + `éléments` sont **inline** sur
+  l'obstacle et nullable (sens uniquement si `type = 'Combinaison'`).
+- **Cascade `ON DELETE` orientée vers le bas** : `Compte → Cheval → Séance →
+  {Obstacle, Tour, Contexte}`. Support **structurel** de la purge RGPD ; la
+  *logique* de suppression de compte reste au lot 1.3. Prouvé de bout en bout par
+  un test fonctionnel (suppression d'un compte → toute la descendance disparaît).
+- **Inviolabilité encodée comme *forme*** (Modèle §2) : `seance.date` **`NOT
+  NULL` sans défaut** (posée une fois, à la création ; peut différer de
+  `created_at` pour le `déclaratif`), `date_modification` **nullable** (posée à
+  l'édition), `provenance` enum **`live | déclaratif`**. L'**application runtime**
+  de l'immuabilité (refus d'un UPDATE silencieux de `date`, pose automatique de
+  `date_modification`/`provenance`) vit dans le **service `sessions`**
+  (Architecture §3, lot 2.x), **pas** en base : pas de trigger ici (éviter la
+  sur-ingénierie). Le schéma porte la forme, pas la garde.
+- **Champs techniques** sur chaque table : `id` UUID PK `DEFAULT
+  gen_random_uuid()` (PG ≥ 13, natif), `created_at`/`updated_at` `timestamptz
+  DEFAULT now() NOT NULL`. `updated_at` reçoit un `$onUpdate` applicatif (reposé
+  à chaque écriture Drizzle ; aucun impact SQL). Types inférés `string`/`Date` →
+  alignés sur `ChampsTechniques`. `email` (compte) et `seance_id` (contexte) sont
+  `UNIQUE`.
+- **Mécanisme d'alignement Drizzle ↔ `shared` = assertion de type**
+  (`api/src/db/alignment.spec.ts`). Pour chaque entité,
+  `expectTypeOf<NullToOptional<typeof table.$inferSelect>>().toEqualTypeOf<T>()`.
+  Le helper `NullToOptional` normalise le **seul** écart de représentation assumé
+  entre les deux mondes : un champ optionnel du domaine (`x?: T`) est *nullable*
+  en base (`T | null`) → `… | null` redevient `…?` avant comparaison. Vérifié à
+  la fois par `pnpm typecheck` **et** par `pnpm test` (specs Vitest statiques,
+  sans base).
+- **Preuve d'application = test DB séparé** (`api/test/db/schema.spec.ts` +
+  `vitest.db.config.ts`, commande `pnpm --filter @hpt/api db:verify`). Il
+  **réinitialise** le schéma, **applique la migration** (migrator programmatique)
+  puis **constate** : 6 tables, toutes les colonnes attendues, 6 enums (valeurs
+  recoupées avec les constantes de `shared`), FK en `CASCADE`, `date` NOT NULL /
+  `date_modification` nullable, `UNIQUE(contexte.seance_id)`, et la purge en
+  cascade de bout en bout. **Volontairement hors `pnpm test`** (il exige une base
+  → la CI principale sans Postgres reste verte). Un **job CI dédié** `db` (service
+  `postgres:16-alpine`) exécute `db:migrate` (CLI drizzle-kit) **puis**
+  `db:verify`.
+
+### Écarts vs cadrage
+
+- **Touche au package `shared` (0.2) : ajout d'une condition d'export
+  `default`.** `packages/shared/package.json` exposait seulement `import` +
+  `types` ; drizzle-kit (résolveur **CJS**) ne pouvait donc pas résoudre
+  `@hpt/shared` (`ERR_PACKAGE_PATH_NOT_EXPORTED`). Ajout de `"default":
+  "./dist/index.js"` comme **repli universel** — le chargement réel est fait par
+  le loader esbuild de drizzle-kit (qui gère l'ESM). C'est exactement l'**interop
+  ESM/CJS** que le journal 0.2 avait laissée « à trancher en 0.3+ quand un module
+  consommera réellement `shared` » (ici, un consommateur **build-time**). **Aucun
+  contrat modifié** (types/enums/Zod/calc inchangés) — seule la carte d'`exports`
+  évolue. Conséquence assumée : un vrai `require()` CJS *résout* désormais le
+  fichier ESM (et lèverait `ERR_REQUIRE_ESM` sous Node 20 **à l'exécution**) —
+  sans incidence en 0.3, aucun code runtime ne consomme la couche DB.
+- **Aucune divergence type `shared` ↔ schéma.** L'alignement passe intégralement
+  au niveau type ; la seule différence de représentation (nullable DB ↔ optionnel
+  domaine) est **assumée et normalisée** (`NullToOptional`), pas une divergence de
+  contrat.
+
+### Points laissés ouverts (reports explicites)
+
+- **`combinaison_ref` sur `Obstacle` → reporté au lot 2.5** : la table cible
+  `Combinaison réutilisable` n'existe pas encore. L'obstacle ne porte ici que
+  `nombre_d_éléments` + `éléments` **inline**.
+- **Clé d'idempotence sur `Séance` → reportée au lot 2.2** (flux de création) —
+  non ajoutée ici.
+- **Application runtime de l'immuabilité/horodatage** (refus d'UPDATE de `date`,
+  pose auto de `date_modification`/`provenance`) → **service `sessions`** (2.x).
+- **Interop ESM/CJS *runtime* complète** (dual-build de `shared` ou bascule api en
+  ESM/`module: node16`) → au lot où l'api consommera le schéma **à l'exécution**.
+  En 0.3, seul le besoin **build-time** est levé (condition `default`).
+- **`énergie` du contexte** : échelle 1-5 (héritée de 0.2) — à confirmer au lot
+  qui exploite le contexte (feed 3.1).
+- Hors périmètre, conformes : pas de `Combinaison réutilisable` (2.5), `Accès
+  invité` (4.6), `Bilan augmenté` (4.5) ; **aucun dérivé persisté**
+  (`Record`/`Jalon`, `hauteur maîtrisée`, `sans_faute`, taux — Modèle §9/§10).
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| Migration s'applique sur Postgres local | `drizzle-kit migrate` (CLI) + migrator programmatique sur PG 16 | ✅ |
+| 6 tables socle + colonnes créées | `db:verify` constate tables + colonnes (techniques + domaine) | ✅ |
+| 6 enums Postgres, valeurs = référentiel `shared` | `db:verify` recoupe `pg_enum` ↔ constantes `shared` | ✅ |
+| FK en `ON DELETE CASCADE` (vers le bas) | `db:verify` lit `referential_constraints` (5 FK = CASCADE) + purge fonctionnelle | ✅ |
+| Inviolabilité encodée | `date` NOT NULL, `date_modification` nullable, `UNIQUE(contexte.seance_id)` | ✅ |
+| Alignement Drizzle ↔ `shared` au niveau type | `alignment.spec.ts` (`expectTypeOf` + `NullToOptional`) — 6 entités | ✅ |
+| `pnpm lint` | `biome check .` (`api/drizzle` exclu du formatage : artefacts générés) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` | Vitest — 25 (shared) + 7 (api : 6 alignement + 1 health), **sans DB** | ✅ 32/32 |
+| `pnpm build` | shared (tsc) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (preuve schéma, Postgres requis) | Vitest dédié — 7 tests sur PG local | ✅ 7/7 |
+| CI | job `ci` (sans DB) + job `db` (service `postgres:16`, `migrate` + `verify`) | ✅ posé |
