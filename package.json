@@ -1,0 +1,29 @@
+{
+  "name": "horse-performance-tracker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Horse Performance Tracker — SaaS mobile de suivi de progression en saut d'obstacles (CSO).",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "build": "pnpm -r run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "typescript": "~6.0.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@biomejs/biome",
+      "@swc/core",
+      "esbuild"
+    ]
+  }
+}

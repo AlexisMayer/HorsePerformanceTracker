@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hpt-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hpt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hpt}
+      POSTGRES_DB: ${POSTGRES_DB:-hpt}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - hpt-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hpt} -d ${POSTGRES_DB:-hpt}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  hpt-postgres-data:

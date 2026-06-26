@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+web-build/
+
+# Expo
+.expo/
+.expo-shared/
+
+# TypeScript
+*.tsbuildinfo
+
+# Tests / coverage
+coverage/
+
+# Env & secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS
+.DS_Store
+Thumbs.db
