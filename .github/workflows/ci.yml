@@ -37,3 +37,49 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  db:
+    name: db · migrate · verify (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hpt
+          POSTGRES_PASSWORD: hpt
+          POSTGRES_DB: hpt
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hpt -d hpt"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://hpt:hpt@localhost:5432/hpt
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The Drizzle schema reuses the referential enums of @hpt/shared; build it
+      # first so drizzle-kit and the verification test can resolve the package.
+      - name: Build shared (contracts)
+        run: pnpm --filter @hpt/shared build
+
+      - name: Apply migration (drizzle-kit migrate)
+        run: pnpm --filter @hpt/api db:migrate
+
+      - name: Verify schema (tables · columns · enums · cascade)
+        run: pnpm --filter @hpt/api db:verify
