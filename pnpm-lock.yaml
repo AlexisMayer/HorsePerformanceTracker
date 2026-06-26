@@ -17,6 +17,9 @@ importers:
 
   api:
     dependencies:
+      '@hpt/shared':
+        specifier: workspace:*
+        version: link:../packages/shared
       '@nestjs/common':
         specifier: ^11.0.0
         version: 11.1.27(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -66,6 +69,9 @@ importers:
 
   app:
     dependencies:
+      '@hpt/shared':
+        specifier: workspace:*
+        version: link:../packages/shared
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.101.1(react@19.2.3)
@@ -120,6 +126,10 @@ importers:
         version: 6.0.3
 
   packages/shared:
+    dependencies:
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
     devDependencies:
       typescript:
         specifier: ~6.0.3
@@ -6207,7 +6217,9 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.74.89': {}
 
