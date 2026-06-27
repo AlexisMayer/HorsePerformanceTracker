@@ -663,3 +663,140 @@ gating sur `email_verified` (décision produit, laissée ouverte).
 | `pnpm build` | shared + api (nest) + app ; `node dist/main.js` boot OK (liens loggés) | ✅ vert |
 | `db:verify` (Postgres requis) | Vitest — 7 (schéma 0.3) + 9 (auth 1.1) + 10 (vérif/reset 1.2) | ✅ 26/26 |
 | CI | job `ci` (sans DB) + job `db` (`migrate` 0→0002 + `verify`, e2e 1.2 inclus) | ✅ |
+
+---
+
+## Lot 1.3 — RGPD compte (suppression & export) · 2026-06-27
+
+Dernier lot du module `auth-account` (Architecture §3 : c'est lui qui porte le
+RGPD). Implémente les **droits des personnes au niveau compte** : **suppression**
+(droit à l'effacement, Spec §9.1 / Stack §7.3) et **export complet** (droit à la
+portabilité). Strictement le lot 1.3 : aucune UI (1.4), aucun cheval/séance
+(Phase 2) — on n'ajoute que deux endpoints + leur tranche de contrat `shared`.
+
+### Emplacement (décisions tranchées)
+
+- **Service de domaine** : `api/src/auth-account/account.service.ts`
+  (`AccountService`) — `deleteAccount` (purge cascade après confirmation) et
+  `exportAccount` (assemblage de l'arbre + projection sans secret). Service
+  **séparé** de `AuthService` (1.1) et `VerificationService` (1.2) : une
+  responsabilité par service, comme le reste du module.
+- **Frontière HTTP** : `api/src/auth-account/account.controller.ts`
+  (`AccountController`, `@Controller('account')`, `@UseGuards(JwtAccessGuard)`
+  au niveau classe) — `DELETE /account` et `GET /account/export`. Routes
+  orientées ressource (Architecture §5), opérant **toujours sur le compte
+  courant** (id issu de l'access token, jamais de l'URL : on ne supprime/exporte
+  que soi).
+- **Contrats `shared`** : `packages/shared/src/schemas/account-export.ts` —
+  `accountDeleteSchema` (confirmation) + `accountExportSchema` et ses
+  sous-schémas (`chevalExportSchema`, `seanceExportSchema`,
+  `obstacleExportSchema`, `tourExportSchema`, `contexteExportSchema`). Aucun type
+  dupliqué : le compte réutilise `compteSortieSchema` (0.2), les enums viennent
+  du référentiel (`niveauChevalSchema`, `typeSéanceSchema`, …).
+- **Aucune migration.** La vérification des cascades (ci-dessous) n'a révélé
+  **aucun** FK manquant → pas de migration additive.
+
+### Décisions tranchées (et pourquoi)
+
+- **Suppression = purge dure en cascade, pas de soft delete** (décision figée,
+  Spec §9.1 dit *purge*). `deleteAccount` fait un simple `DELETE FROM compte
+  WHERE id = …` ; tout le reste tombe par `ON DELETE CASCADE`. **Portée exacte de
+  la purge** : l'arbre de propriété du Modèle §3 (`Compte → Cheval → Séance →
+  {Obstacle, Tour, Contexte}`) **et** les tables techniques d'auth
+  (`refresh_token` du 1.1, `verification_token` du 1.2). Prouvé « aucune ligne
+  résiduelle » par `account.spec.ts` (comptage par `compte_id` / `cheval_id` /
+  `seance_id` après suppression → 0 partout, jetons inclus).
+- **Vérification des cascades auth (DoD) : déjà conformes, rien à corriger.** Les
+  deux tables ajoutées hors socle portaient **dès leur création** une FK
+  `compte_id` en `ON DELETE CASCADE` (consigné aux journaux 1.1 et 1.2, « support
+  structurel de la purge RGPD »). Confirmé à deux niveaux : lecture du SQL des
+  migrations `0001`/`0002`, **et** assertion runtime sur
+  `information_schema.referential_constraints` dans `account.spec.ts`
+  (`refresh_token.compte_id` et `verification_token.compte_id` = `CASCADE`).
+  **Aucune migration additive** n'a donc été nécessaire — l'anticipation des lots
+  1.1/1.2 a payé.
+- **Confirmation de suppression par mot de passe (recommandée → retenue).** La
+  route est déjà authentifiée (garde JWT) ; on exige **en plus** le mot de passe
+  courant (`accountDeleteSchema { password }`), re-vérifié via `PasswordService`
+  (le même argon2 que le login). Raison : une suppression est **irréversible** —
+  une re-vérification d'identité protège contre un access token volé/oublié sur
+  un appareil. Compte introuvable **ou** mot de passe erroné → **401 générique**
+  (pas d'oracle). Le mot de passe absent → **400** (frontière Zod).
+- **Export = JSON structuré, synchrone** (échelle v1 ; pas d'asynchrone ni de
+  fichier Object Storage — over-engineering hors périmètre). Lecture en
+  **requêtes groupées** (une par niveau, `inArray`) puis assemblage en mémoire :
+  pas de N+1, pas d'abstraction prématurée. **Format** : `{ exported_at, compte,
+  chevaux[] }`, chaque cheval portant ses `seances[]`, chaque séance ses
+  `obstacles[]` / `tours[]` / `contexte` (0..1). `exported_at` horodate le cliché
+  (métadonnée de portabilité).
+- **Exclusions de l'export (secrets) garanties par construction.** Le compte est
+  projeté par `compteSortieSchema` (qui **ne déclare pas** `password_hash`) et
+  tous les `.object()` Zod **strippent** les clés inconnues : même en passant la
+  ligne brute de la base, le hash ne peut pas fuir (même posture qu'aux lots
+  0.2/1.1, prouvée runtime **et** par garde de type `expectTypeOf`). Les tables
+  techniques d'auth (`refresh_token`, `verification_token`) **ne sont pas
+  exportées** : ce sont des artefacts de session/sécurité, pas des données de
+  portabilité de l'utilisateur. Test : le payload sérialisé ne contient ni
+  `password_hash`, ni `token_hash`, ni `refresh_token`/`verification_token`,
+  **alors que** ces lignes existent bien en base au moment de l'export.
+- **Inclusion `live` ET `déclaratif`** (décision figée) : l'export est la donnée
+  *brute* de l'utilisateur ; la curation « live seul » est une affaire de
+  **métrique/rapport** (Modèle §2), pas d'export. Prouvé : l'arbre exporté
+  contient les deux provenances.
+
+### Écarts vs cadrage (consignés)
+
+- **Aucune migration, aucun nouveau type d'entité.** Le lot est purement additif
+  en code applicatif (service + controller + contrats), sans toucher au schéma DB
+  ni au Modèle de données — les cascades nécessaires existaient déjà.
+- **Sous-schémas de sortie explicites pour Cheval/Séance/Obstacle/Tour/Contexte**
+  (`*ExportSchema`). Le journal 0.2 avait noté « pas de DTO de sortie explicite »
+  pour ces entités (leur projection = l'entité). L'export en a besoin pour
+  **valider la frontière** (Architecture §5) et garantir le strip ; ils
+  **n'altèrent aucun contrat existant** et restent fidèles aux types de `shared`
+  (champs nullable de la base rendus en `null`, pas omis). Pas de duplication :
+  les enums et le compte réutilisent les schémas existants.
+- **Access token survivant à la suppression.** Le JWT d'access (sans état, TTL
+  15 min) reste cryptographiquement valide après la purge, mais ne résout plus
+  aucun compte (toute route le ré-résolvant échoue) ; les **refresh tokens sont
+  purgés** par la cascade (plus de renouvellement possible). Acceptable en v1
+  (cohérent avec le modèle JWT sans liste de révocation d'access — cf. point
+  ouvert « rate limiting / révocation » du 1.1).
+
+### Points laissés ouverts
+
+- **Rétention légale future des données de paiement** : hors sujet aujourd'hui
+  (Mollie = Phase 4, aucune donnée de paiement n'existe). Quand elle arrivera, la
+  purge devra composer avec les **obligations de conservation comptable** (p. ex.
+  factures à conserver N années) : la suppression de compte ne pourra pas
+  forcément cascader *aveuglément* les futures tables de facturation — il faudra
+  alors **anonymiser** plutôt que supprimer ces lignes, ou les détacher du
+  compte. À trancher au lot qui introduit la facturation (Phase 4), **pas ici**.
+- **Anonymisation partielle** : volontairement non faite (over-engineering en
+  v1, hors périmètre). La purge dure suffit au droit à l'effacement tant qu'il
+  n'y a pas de donnée à conservation obligatoire (cf. ci-dessus).
+- **Pruning / révocation d'access token** : inchangé depuis 1.1 (point ouvert
+  transverse) ; la suppression s'appuie sur la cascade + la courte durée de vie
+  de l'access token plutôt que sur une liste de révocation.
+- **Export — pagination / volumétrie** : synchrone et complet convient à
+  l'échelle v1 (un utilisateur, ses chevaux). Si la volumétrie explose un jour
+  (improbable pour un compte individuel), un export asynchrone + fichier serait à
+  rouvrir — explicitement hors v1.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| Supprimer un compte **purge tout** (chevaux, séances, obstacles, tours, contexte **+ refresh tokens & jetons**) | e2e `account.spec.ts` : après `DELETE /account`, comptage par `compte_id`/`cheval_id`/`seance_id` = **0** partout (8 tables) | ✅ aucune ligne résiduelle |
+| Cascades auth (1.1/1.2) effectives | e2e : `referential_constraints` → `refresh_token.compte_id` & `verification_token.compte_id` = `CASCADE` ; SQL `0001`/`0002` relu | ✅ (rien à corriger) |
+| Export = JSON complet **sans secret** | e2e : arbre compte+chevaux+séances+obstacles/tours/contexte ; payload sérialisé **sans** `password_hash`/`token_hash`/refresh/jeton (alors qu'ils existent en base) | ✅ |
+| Export inclut **live ET déclaratif** | e2e : les deux provenances présentes dans l'arbre | ✅ |
+| Suppression **exige l'authentification** | e2e : `DELETE /account` sans jeton → **401** | ✅ |
+| Suppression **exige la confirmation mot de passe** | e2e : bon jeton + mauvais mot de passe → **401** ; mot de passe absent → **400** (Zod) | ✅ |
+| Aucun secret en sortie (garde de type) | `account-export.test.ts` : runtime (strip) **+** `expectTypeOf` (pas de `password_hash`, pas de structure de jetons) | ✅ |
+| `pnpm lint` | `biome check .` | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — 40 (shared, +5 export/delete) + 13 (api) | ✅ 53/53 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app ; app NestJS bootée par les e2e (require CJS de `shared` résolu) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 7 (schéma 0.3) + 9 (auth 1.1) + 10 (vérif/reset 1.2) + **7 (RGPD 1.3)** | ✅ 33/33 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 1.3 inclus) — inchangée (aucune migration) | ✅ |
