@@ -540,3 +540,126 @@ Strictement le lot 1.1 : ni vérification e-mail (1.2), ni RGPD (1.3), ni UI
 | `pnpm build` | shared (tsc ESM+CJS) + api (nest) + app (typecheck) ; `node dist/main.js` boot OK | ✅ vert |
 | `db:verify` (Postgres requis) | Vitest — 7 (schéma 0.3) + 9 (auth e2e 1.1) sur PG local | ✅ 16/16 |
 | CI | job `ci` (sans DB : lint/typecheck/test/build) + job `db` (`migrate` + `verify`, auth e2e inclus) | ✅ |
+
+---
+
+## Lot 1.2 — Vérification e-mail & reset de mot de passe · 2026-06-27
+
+Extension du module `auth-account` (Architecture §3) : **vérification d'e-mail**
+et **réinitialisation de mot de passe** via des **liens à usage unique &
+expirables**, envoyés par un **port `Mailer`** (stub console/log en dev ; TEM
+prod différé). S'appuie sur la table `refresh_token` de 1.1 (révocation au
+reset). Strictement le lot 1.2 : pas de RGPD (1.3), pas d'UI (1.4), pas de
+gating sur `email_verified` (décision produit, laissée ouverte).
+
+### Emplacement (décisions tranchées)
+
+- **Schéma + migration** : `api/src/db/schema/verification-token.ts` +
+  `api/drizzle/0002_aromatic_overlord.sql` — additive (CREATE TYPE enum + CREATE
+  TABLE seuls, aucune table existante touchée).
+- **Service de domaine** : `api/src/auth-account/verification.service.ts`
+  (`VerificationService`) — émission/consommation des jetons, branchements reset
+  + envoi. `auth.service.ts` (1.1) **étendu** : le `register` déclenche l'envoi.
+- **Port e-mail** : `api/src/auth-account/mailer/` — `mailer.ts` (interface
+  `Mailer` + jeton `MAILER` + `MailMessage`) et `console-mailer.ts`
+  (`ConsoleMailer`, stub dev).
+- **Config** : durées de vie + construction des liens dans `auth.config.ts`.
+- **Erreurs** : `InvalidVerificationTokenError` dans `auth.errors.ts`.
+- **Utilitaire** : `api/src/auth-account/sha256.ts` — `sha256Hex` partagé par
+  `TokenService` (1.1, refactoré pour l'utiliser) et `VerificationService`.
+- **Contrats** : `packages/shared/src/schemas/auth.ts` (extension de 1.1) ; la
+  politique de mot de passe est extraite en `motDePasseSchema` (`schemas/
+  compte.ts`), réutilisée par l'inscription **et** le reset (pas de règle dupliquée).
+
+### Décisions tranchées (et pourquoi)
+
+- **Une seule table `verification_token`** (vs deux tables) avec un enum `type`
+  (`email_verification | password_reset`). Les deux usages partagent exactement
+  la même mécanique — jeton hashé à usage unique, expiration, FK `compte` — donc
+  une table unique évite la duplication de structure/code ; le `type` discrimine
+  (et **cloisonne** : un jeton de vérification ne vaut pas pour un reset, vérifié
+  par test). Colonnes : `compte_id` (FK **`ON DELETE CASCADE`** → support purge
+  RGPD 1.3), `type`, `token_hash` (**UNIQUE**), `expires_at`, `consumed_at`
+  (usage unique), + champs techniques. Clés ASCII, **table technique hors Modèle
+  de données** (même posture que `refresh_token` en 1.1 → pas d'alignement
+  `shared`). Enum `verification_token_type` défini côté `api` (technique), pas
+  dans le référentiel `shared` (qui ne porte que des libellés métier).
+- **Jeton jamais en clair.** Secret tiré au sort (`randomBytes(32)` → base64url,
+  haute entropie) ; seul son **SHA-256 (hex)** est persisté. On retrouve la ligne
+  par le hash du jeton présenté (colonne `UNIQUE`). Hash rapide (pas argon2) :
+  cohérent avec le raisonnement entropie de 1.1 (argon2 réservé au mot de passe).
+- **Consommation atomique = usage unique.** `consume()` fait **un seul** UPDATE
+  conditionnel (`consumed_at IS NULL` **et** `expires_at > now()`) qui pose
+  `consumed_at` et renvoie la ligne. Toute absence de ligne (inconnu / déjà
+  consommé / expiré / mauvais type) → `InvalidVerificationTokenError` (400).
+  L'atomicité ferme la fenêtre d'usage concurrent. **Émettre** un nouveau lien
+  périme d'abord les jetons non consommés du même type (un seul lien actif).
+- **Port `Mailer` étroit** (forme tranchée) : une méthode par e-mail
+  transactionnel (`sendEmailVerification`, `sendPasswordReset`), chacune reçoit
+  `{ to, link }`. Pas de moteur de templates ni de transport générique (pas
+  d'abstraction prématurée — Archi §7). `ConsoleMailer` **logge** le lien
+  (`Logger` Nest) — c'est le **seam** : l'implémentation Scaleway TEM (Stack
+  §3.5) se branchera derrière la même interface, permutée dans le module.
+- **Branchement sur le `register` de 1.1 = modification directe du flux** (vs
+  event bus). `AuthService.register` appelle `verification.issueEmailVerification`
+  après création du compte. Choix assumé : pas de bus d'événements (sur-ingénierie
+  à cette échelle, dépendance acyclique `AuthService → VerificationService`).
+- **Au reset : re-hash argon2 + révocation de TOUS les refresh tokens** du compte
+  (`TokenService.revokeAllForAccount`, ajouté). Toute session ouverte tombe — un
+  attaquant éventuellement actif ne survit pas au reset. Prouvé par test (ancien
+  refresh → 401 après reset).
+- **Anti-énumération** : `verify-email/request` et `password-reset/request`
+  renvoient **200** (corps vide), que le compte existe ou non ; le lien n'est
+  émis que si le compte existe (et, pour la vérification, n'est pas déjà vérifié).
+  Aucune fuite d'existence (testé sur e-mail inconnu). Les *confirm* renvoient un
+  résultat observable : `verify-email/confirm` → `CompteSortie` (`email_verified:
+  true`) ; `password-reset/confirm` → 204.
+- **Durées de vie** (ajustables, `auth.config.ts`) : vérification **24 h**, reset
+  **1 h** (fenêtre courte par sécurité).
+
+### Écarts vs cadrage (consignés)
+
+- **Table `verification_token` hors Modèle de données** — comme `refresh_token`
+  en 1.1 : besoin serveur (lien à usage unique, expirable) absent des entités
+  socle. Ajout par **migration Drizzle additive**, FK CASCADE pour la purge RGPD.
+- **Refactor mineur de 1.1** : `TokenService.sha256` délègue désormais à
+  `sha256Hex` (déduplication, aucun changement de comportement). `schemas/
+  compte.ts` expose `motDePasseSchema` (même valeur `min(8).max(200)`, factorisée).
+  Aucun contrat existant modifié.
+- **Pas de gating sur `email_verified`** : conformément au périmètre, le login
+  reste autorisé indépendamment de la vérification (cf. point ouvert ci-dessous).
+
+### Points laissés ouverts
+
+- **Gating `email_verified`** : faut-il bloquer tout/partie de l'accès pour un
+  compte non vérifié ? **Décision produit non tranchée** — non imposée ici (le
+  login reste ouvert, comme posé en 1.1). À trancher côté produit / lot UI (1.4).
+- **Implémentation TEM Scaleway** (Stack §3.5) : **différée** (prod). Le port
+  `Mailer` est le seam ; en prod on permute `ConsoleMailer` → `ScalewayTemMailer`
+  dans `auth-account.module.ts`, sans toucher au domaine. Délivrabilité réelle,
+  templates HTML, gestion des bounces : hors lot 1.2.
+- **Pruning des jetons** expirés/consommés (tâche de nettoyage) : non fait — la
+  cascade RGPD les purge à la suppression du compte (même posture que les refresh
+  en 1.1). Point ouvert transverse.
+- **Forme finale des liens** (deep link app vs page web) : `APP_PUBLIC_URL` +
+  chemins ; l'UI réelle des écrans de confirmation est le lot 1.4.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| L'inscription **logge un lien** de vérification (dev) | `node dist/main.js` + `POST /auth/register` → log `[Mailer] [email-verification] … token=…` | ✅ |
+| **Confirmer** le lien passe `email_verified` à `true` | e2e : `verify-email/confirm` → `CompteSortie.email_verified = true` | ✅ |
+| **Demander un reset** logge un lien ; **confirmer** change le mot de passe | e2e : login **OK** avec le nouveau, **KO** (401) avec l'ancien | ✅ |
+| Jetons **à usage unique** : réutilisation rejetée | e2e : 2ᵉ confirm (vérif **et** reset) → 400 | ✅ |
+| Jetons **expirables** : expiration rejetée | e2e : `expires_at` forcé au passé → confirm 400 | ✅ |
+| Le reset **révoque les refresh tokens** | e2e : ancien refresh → 401 après reset | ✅ |
+| Demande de reset / renvoi sur **e-mail inconnu** → **200 sans fuite** | e2e : 200, **aucun** e-mail émis | ✅ |
+| Cloisonnement par `type` | e2e : jeton de vérification présenté au reset → 400 | ✅ |
+| **Migration** `verification_token` s'applique sur Postgres local | `drizzle-kit migrate` depuis zéro (0000→0002) ; enum + FK CASCADE + UNIQUE constatés | ✅ |
+| `pnpm lint` | `biome check .` | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — 35 (shared, +3 schémas 1.2) + 13 (api, +2 ConsoleMailer) | ✅ 48/48 |
+| `pnpm build` | shared + api (nest) + app ; `node dist/main.js` boot OK (liens loggés) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 7 (schéma 0.3) + 9 (auth 1.1) + 10 (vérif/reset 1.2) | ✅ 26/26 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` 0→0002 + `verify`, e2e 1.2 inclus) | ✅ |

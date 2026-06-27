@@ -12,6 +12,7 @@ import { compte } from '../db/schema';
 import { EmailAlreadyUsedError, InvalidCredentialsError } from './auth.errors';
 import { PasswordService } from './password.service';
 import { TokenService } from './token.service';
+import { VerificationService } from './verification.service';
 
 /**
  * Service de domaine `auth-account` (Architecture §3) : règles métier de
@@ -24,13 +25,16 @@ export class AuthService {
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
+    private readonly verification: VerificationService,
   ) {}
 
   /**
    * Inscription : crée un `Compte` avec mot de passe **haché argon2**,
-   * `email_verified = false` et `tier = gratuit` (défauts serveur). N'envoie
-   * **aucun** e-mail (vérification = lot 1.2). Renvoie la projection publique
-   * (sans secret).
+   * `email_verified = false` et `tier = gratuit` (défauts serveur). Déclenche
+   * l'**envoi du lien de vérification** (lot 1.2) via le port `Mailer` (stub
+   * console en dev) — branchement **direct dans le flux** `register` (pas
+   * d'event bus : pas d'abstraction prématurée, cf. journal 1.2). Renvoie la
+   * projection publique (sans secret).
    */
   async register(dto: RegisterDto): Promise<CompteSortie> {
     const existing = await this.db
@@ -47,6 +51,8 @@ export class AuthService {
       .insert(compte)
       .values({ email: dto.email, nom: dto.nom, password_hash, type: dto.type })
       .returning();
+
+    await this.verification.issueEmailVerification({ id: row.id, email: row.email });
 
     // `compteSortieSchema` retire tout champ sensible (dont `password_hash`).
     return compteSortieSchema.parse(row);

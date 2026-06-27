@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { compteCréerSchema } from './compte';
+import { compteCréerSchema, motDePasseSchema } from './compte';
 
 /**
  * Contrats d'authentification (lot 1.1) — DTO d'entrée/sortie + Zod, source de
@@ -44,6 +44,53 @@ export const logoutSchema = z.object({
 });
 
 export type LogoutDto = z.infer<typeof logoutSchema>;
+
+// ───────────────── Vérification e-mail & reset (lot 1.2) ─────────────────
+
+/**
+ * Demande (re)envoi du lien de **vérification d'e-mail**. Anti-énumération : le
+ * serveur répond **200** que le compte existe ou non — ce DTO ne sert qu'à
+ * valider la forme de l'e-mail, jamais à confirmer une existence.
+ */
+export const emailVerificationRequestSchema = z.object({
+  email: z.string().email(),
+});
+
+export type EmailVerificationRequestDto = z.infer<typeof emailVerificationRequestSchema>;
+
+/**
+ * Confirmation de **vérification d'e-mail** : le jeton (à usage unique,
+ * expirable) reçu dans le lien. Validé puis consommé côté serveur ;
+ * `email_verified` passe à `true`.
+ */
+export const emailVerificationConfirmSchema = z.object({
+  token: z.string().min(1),
+});
+
+export type EmailVerificationConfirmDto = z.infer<typeof emailVerificationConfirmSchema>;
+
+/**
+ * Demande de **réinitialisation de mot de passe**. Anti-énumération : réponse
+ * **200** systématique (le lien n'est envoyé que si le compte existe).
+ */
+export const passwordResetRequestSchema = z.object({
+  email: z.string().email(),
+});
+
+export type PasswordResetRequestDto = z.infer<typeof passwordResetRequestSchema>;
+
+/**
+ * Confirmation de **réinitialisation** : jeton (usage unique, expirable) +
+ * nouveau mot de passe. Le serveur re-hache en argon2 et **révoque tous les
+ * refresh tokens** du compte (sécurité). `new_password` suit la même politique
+ * que l'inscription (`motDePasseSchema`).
+ */
+export const passwordResetConfirmSchema = z.object({
+  token: z.string().min(1),
+  new_password: motDePasseSchema,
+});
+
+export type PasswordResetConfirmDto = z.infer<typeof passwordResetConfirmSchema>;
 
 // ───────────────────────────── Sortie ─────────────────────────────
 

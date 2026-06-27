@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { AuthTokens, Tier, TypeCompte } from '@hpt/shared';
 import { Inject, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -12,6 +12,7 @@ import {
   REFRESH_TOKEN_TTL_SECONDS,
 } from './auth.config';
 import { InvalidRefreshTokenError, RefreshTokenReuseError } from './auth.errors';
+import { sha256Hex } from './sha256';
 
 /** Identité minimale embarquée dans l'access token et exposée à la garde. */
 export interface CompteClaims {
@@ -99,6 +100,19 @@ export class TokenService {
     return tokens;
   }
 
+  /**
+   * Révoque **tous** les refresh tokens actifs d'un compte (lot 1.2). Appelé à
+   * la réinitialisation du mot de passe : toute session ouverte est invalidée
+   * (mesure de sécurité — un attaquant ayant pu être actif ne survit pas au
+   * reset).
+   */
+  async revokeAllForAccount(compteId: string): Promise<void> {
+    await this.db
+      .update(refreshToken)
+      .set({ revoked_at: new Date() })
+      .where(and(eq(refreshToken.compte_id, compteId), isNull(refreshToken.revoked_at)));
+  }
+
   /** Déconnexion : révoque le refresh présenté (best-effort, sans rien révéler). */
   async revoke(presented: string): Promise<void> {
     let payload: RefreshJwtPayload;
@@ -183,7 +197,7 @@ export class TokenService {
   }
 
   private sha256(value: string): string {
-    return createHash('sha256').update(value).digest('hex');
+    return sha256Hex(value);
   }
 
   private matches(a: string, b: string): boolean {

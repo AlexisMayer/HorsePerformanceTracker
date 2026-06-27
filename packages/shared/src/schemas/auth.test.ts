@@ -2,7 +2,11 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   type AuthTokens,
   authTokensSchema,
+  emailVerificationConfirmSchema,
+  emailVerificationRequestSchema,
   loginSchema,
+  passwordResetConfirmSchema,
+  passwordResetRequestSchema,
   refreshSchema,
   registerSchema,
 } from './auth';
@@ -83,5 +87,35 @@ describe('authTokensSchema (DTO de sortie)', () => {
   it('garantit au niveau du type qu’aucun secret serveur ne fuit', () => {
     expectTypeOf<AuthTokens>().not.toHaveProperty('password_hash');
     expectTypeOf<AuthTokens>().not.toHaveProperty('password');
+  });
+});
+
+describe('vérification e-mail & reset (lot 1.2)', () => {
+  it('demande (vérif / reset) : exige un e-mail bien formé', () => {
+    expect(emailVerificationRequestSchema.safeParse({ email: 'a@b.co' }).success).toBe(true);
+    expect(emailVerificationRequestSchema.safeParse({ email: 'pasunmail' }).success).toBe(false);
+    expect(passwordResetRequestSchema.safeParse({ email: 'a@b.co' }).success).toBe(true);
+    expect(passwordResetRequestSchema.safeParse({ email: '' }).success).toBe(false);
+  });
+
+  it('confirmation de vérification : exige un jeton non vide', () => {
+    expect(emailVerificationConfirmSchema.safeParse({ token: 'abc' }).success).toBe(true);
+    expect(emailVerificationConfirmSchema.safeParse({ token: '' }).success).toBe(false);
+    expect(emailVerificationConfirmSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('confirmation de reset : jeton + nouveau mot de passe (politique 8→200)', () => {
+    expect(
+      passwordResetConfirmSchema.safeParse({ token: 'abc', new_password: 'motdepasse-solide' })
+        .success,
+    ).toBe(true);
+    // Mot de passe trop court → rejeté (même politique que l'inscription).
+    expect(
+      passwordResetConfirmSchema.safeParse({ token: 'abc', new_password: 'court' }).success,
+    ).toBe(false);
+    // Jeton manquant → rejeté.
+    expect(
+      passwordResetConfirmSchema.safeParse({ new_password: 'motdepasse-solide' }).success,
+    ).toBe(false);
   });
 });
