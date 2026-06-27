@@ -5,10 +5,17 @@
     "version": "0.0.0",
     "orientation": "portrait",
     "scheme": "hpt",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#FBF7F0",
+    "ios": {
+      "userInterfaceStyle": "light"
+    },
+    "android": {
+      "userInterfaceStyle": "light"
+    },
     "web": {
       "output": "static"
     },
-    "plugins": ["expo-router"]
+    "plugins": ["expo-router", "expo-font", "expo-secure-store"]
   }
 }
