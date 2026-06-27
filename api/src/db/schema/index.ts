@@ -13,5 +13,6 @@ export * from './compte';
 export * from './contexte';
 export * from './enums';
 export * from './obstacle';
+export * from './refresh-token';
 export * from './seance';
 export * from './tour';
