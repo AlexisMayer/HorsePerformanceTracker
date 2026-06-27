@@ -800,3 +800,166 @@ portabilité). Strictement le lot 1.3 : aucune UI (1.4), aucun cheval/séance
 | `pnpm build` | shared (ESM+CJS) + api (nest) + app ; app NestJS bootée par les e2e (require CJS de `shared` résolu) | ✅ vert |
 | `db:verify` (Postgres requis) | Vitest — 7 (schéma 0.3) + 9 (auth 1.1) + 10 (vérif/reset 1.2) + **7 (RGPD 1.3)** | ✅ 33/33 |
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 1.3 inclus) — inchangée (aucune migration) | ✅ |
+
+---
+
+## Lot 1.4 — Coquille app & navigation · 2026-06-27
+
+Première vraie tranche **`app`** (Architecture §4) : pose la **coquille de
+navigation** (tab bar 4 onglets + FAB central), la **couche de tokens UI**
+(UI/UX §3) et **câble les écrans d'auth** sur l'API de 1.1 (refresh en secure
+storage, rafraîchissement auto sur 401). Strictement le lot 1.4 : aucun contenu
+réel d'onglet (Feed 3.1, Historique 3.4, Analytique 5.1), aucune saisie
+(2.2/2.3), aucun cheval (2.1), aucun gating/paywall (4.x).
+
+### Structure retenue (décision tranchée)
+
+Découpage de `app/src/` **par responsabilité**, sans arbre figé d'avance
+(Architecture §6/§7) :
+
+- **`theme/`** — tokens UI : `tokens.ts` (couleurs, espacements, rayons,
+  ombres, cible tactile), `typography.ts` (polices + échelle), barrel.
+- **`ui/`** — primitives réutilisables : `Text`/`StatText`, `Button`,
+  `TextField`, `Screen`, `Card`, `Badge`, `EmptyState`, `SegmentedControl`,
+  `ScreenHeader`.
+- **`auth/`** — logique d'auth : `token-store.ts`, `api-client.ts`,
+  `auth-api.ts`, `auth-context.tsx`, `error-messages.ts` (+ leurs tests).
+- **`navigation/`** — `tabs.ts` (config pure, source unique) + `tab-bar.tsx`
+  (bouton d'onglet & FAB).
+- **`config.ts`** — URL d'API (env `EXPO_PUBLIC_API_URL`, repli localhost:3000).
+- **`app/`** — routes Expo Router : groupe `(auth)` (login, register,
+  forgot-password) et groupe `(tabs)` (index=Feed, historique, analytique,
+  profil) + `_layout` racine (polices, fournisseurs, garde de session).
+
+### Décisions tranchées (et pourquoi)
+
+- **Navigation : Expo Router *headless tabs* (`expo-router/ui`)**, pas le
+  `Tabs` classique (react-navigation). Raison : le FAB central est un **bouton
+  hors-route** (placeholder), pas un onglet — la navigation headless
+  (`<Tabs>` + `<TabSlot/>` + `<TabList>` + `<TabTrigger asChild>`) permet de
+  rendre une barre 100 % maîtrisée (Vert sous-bois, cibles ≥ 44 px, FAB
+  surélevé) avec les 4 routes **et** un bouton intercalé au centre, sans créer
+  de route fantôme. La barre est pilotée par `TABS` (`navigation/tabs.ts`),
+  **source unique** consommée aussi par le test. La racine reste un `Stack`
+  (groupes `(auth)`/`(tabs)`).
+- **Structure des tokens (UI/UX §3) : primitives typées, zéro hex dispersé.**
+  `colors` indexe la palette « Écurie chaleureuse » **par rôle** (`primary`,
+  `surface`, `danger`…), pas par teinte — la frontière stable est le rôle. Grille
+  8 px (`spacing`, demi-pas 4 px), rayons 12–20 px, **ombres chaudes** (couleur =
+  Cuir, jamais de gris froid), `minTouchTarget = 44`. **Mode clair uniquement**
+  (`userInterfaceStyle: light` dans `app.json`, `StatusBar` sombre) — pas de dark
+  mode (§8).
+- **Typo chargée : Hanken Grotesk (display/chiffres) + Inter (corps)** via
+  `@expo-google-fonts/*` + `useFonts` au démarrage (voile crème tant que les
+  polices ne sont pas prêtes). Variantes numériques (`hero`, `stat`) en
+  **chiffres tabulaires** (`fontVariant: ['tabular-nums']`) — §3.2/§8.
+- **Gestion des jetons (Stack §3.4) : refresh en secure storage, access en
+  mémoire.** `token-store.ts` injecte un backend `SecureStorageBackend` étroit
+  (la prod passe le module `expo-secure-store` ; les tests un faux en mémoire) —
+  la logique reste **testable sans natif**. L'access vit en variable de module
+  (jamais persisté) ; le refresh va dans `expo-secure-store` (clé
+  `hpt.refresh_token`). **Survit au redémarrage** : une nouvelle instance de
+  store relit le refresh, l'access repart de zéro (prouvé par test).
+- **Interceptor 401 single-flight (`api-client.ts`).** Une requête authentifiée
+  qui prend un **401** déclenche **un** `POST /auth/refresh` (refresh de 1.1),
+  persiste le nouveau couple, puis **rejoue** la requête. Plusieurs 401
+  concurrents **partagent une seule rotation** (`refreshing` mutualisé) — sinon
+  deux rotations parallèles tueraient la famille (détection de réutilisation de
+  1.1). La réponse de refresh est validée par **`authTokensSchema` de
+  `@hpt/shared`** (aucun type dupliqué). Refresh rejeté (expiré/révoqué/réuti­lisé)
+  → purge locale + `onSessionExpired` → écran de connexion. Au **démarrage**, si
+  un refresh existe, `GET /auth/me` part sans access → 401 → l'interceptor
+  rafraîchit et rejoue : la session se restaure **sans code spécial**.
+- **État serveur via TanStack Query (Stack §3.1).** Le compte (`/auth/me`) est
+  une `useQuery` (cache, activée quand une session existe) ; `login`/`register`/
+  `logout` sont des `useMutation`. `register` enchaîne une **connexion
+  automatique** (l'API 1.1 ne renvoie pas de jetons à l'inscription). `status`
+  (`loading`/`authenticated`/`unauthenticated`) dérive de l'amorçage + de la
+  query ; le `_layout` racine **garde** la navigation (redirige `(auth)` ↔
+  `(tabs)`).
+- **Profil = état minimal du compte + déconnexion** (consigne). Affiche e-mail,
+  `tier` (badge) et `type` (Cavalier/Coach) lus au login ; bouton **Se
+  déconnecter** (révoque le refresh côté serveur puis purge local). Le `tier` est
+  indicatif — le **gating reste l'autorité serveur** (Architecture §3), pas l'UI.
+- **Câblage de 1.2 (intégré) : points d'entrée *request* seulement.** Sont
+  câblés : **mot de passe oublié** (`/forgot-password` → `POST
+  /auth/password-reset/request`, anti-énumération) et **renvoi du lien de
+  vérification** depuis le Profil quand `email_verified = false` (`POST
+  /auth/verify-email/request`). **Non câblés (différés)** : les écrans de
+  *confirmation* par jeton (`verify-email/confirm`, `password-reset/confirm`),
+  qui supposent un **deep link** porteur du jeton — hors surface de la DoD (1.1)
+  et non trivial. Consigné comme point ouvert.
+- **FAB et sélecteur de cheval = placeholders explicites.** Le **FAB central**
+  est présent et proéminent mais **inactif** : il ouvre un message « la saisie
+  arrive au prochain lot » (la saisie est 2.2/2.3). Le **sélecteur de cheval** en
+  en-tête (Feed/Historique/Analytique) est rendu **inerte et désactivé** (« Aucun
+  cheval ») : la coquille le *prévoit visuellement* sans **aucune** logique
+  multi-cheval (aucun cheval avant 2.1) — conforme à la consigne « hors
+  périmètre ».
+- **Écrans d'onglets = invitations (UI/UX §7).** Feed/Historique/Analytique sont
+  des `EmptyState` (icône + titre + invitation), jamais un vide muet ; leur vrai
+  contenu vient avec leurs lots.
+
+### Écarts vs cadrage (consignés)
+
+- **Suppression de `app/src/contracts.demo.ts` (artefact du lot 0.2).** Sa
+  raison d'être — prouver à la compilation que `@hpt/shared` est consommable
+  côté app — est désormais **assurée par du code réel** (`api-client`,
+  `auth-api`, `auth-context`, écrans importent les DTO/schémas de `shared`). Le
+  démo était devenu du code mort ; retiré. Le pendant **api**
+  (`api/src/contracts.demo.ts`) est **conservé** (aucune autre consommation
+  runtime de `shared` n'a remplacé sa démonstration côté api à ce stade).
+- **Nouvelles dépendances app** (versions alignées sur Expo SDK 56 via
+  `bundledNativeModules`) : `expo-secure-store ~56.0.4`, `expo-font ~56.0.7`,
+  `@expo/vector-icons ^15`, `@expo-google-fonts/hanken-grotesk`,
+  `@expo-google-fonts/inter` ; `vitest` en dev. `app.json` déclare les plugins
+  `expo-font` + `expo-secure-store` et fige le mode clair.
+- **Tests app en Vitest *Node* (logique pure).** Pas de rendu React Native en
+  test (toolchain RN+Vitest fragile) : on isole la **logique non triviale et
+  critique** (token store, interceptor 401) dans des modules **purs et
+  injectables**, couverts par Vitest. La **structure de navigation** est
+  vérifiée via la config `TABS` (même source que l'UI). Le rendu/compilation des
+  écrans est couvert par `tsc --noEmit` **et** par un **export Metro web réel**
+  (voir DoD) qui bundle les 16 routes sans erreur. `pnpm -r run test` exécute
+  désormais aussi le paquet `app` (script `test` ajouté).
+- **`StyleSheet.absoluteFillObject` absent des types** de cette version RN →
+  positionnement absolu écrit explicitement (sans incidence).
+
+### Points laissés ouverts
+
+- **Confirmation 1.2 par deep link** (`verify-email/confirm`,
+  `password-reset/confirm`) : non câblée — nécessite la gestion d'un lien
+  entrant (`expo-linking` + `APP_PUBLIC_URL`). À poser quand on traitera les
+  liens entrants (probablement avec l'onboarding 3.5 ou un lot dédié).
+- **Gating `email_verified`** (point ouvert hérité de 1.1/1.2) : le login reste
+  ouvert ; le Profil **invite** seulement à vérifier (bandeau + renvoi). Aucune
+  fonctionnalité n'est bloquée — décision produit non tranchée.
+- **Brouillon + réessai d'enregistrement** (qualité de plancher, Stack §4) :
+  hors périmètre 1.4 (rien à enregistrer encore) — viendra avec la saisie 2.2.
+  L'**interceptor 401** pose déjà la brique « réessai transparent sur jeton
+  expiré ».
+- **Tests de rendu de composants** (RTL/`@testing-library/react-native`) : non
+  introduits (coût d'outillage). À rouvrir si un lot front exige d'assert sur le
+  rendu plutôt que sur la logique.
+- **Rate limiting / révocation d'access** (transverse, hérité de 1.1) : inchangé.
+- **Démarrage Metro natif** (iOS/Android) non exécuté dans le bac à sable ; la
+  preuve runtime est l'**export web** (Metro, 1030 modules, 16 routes). Un
+  `expo start` natif reste à confirmer côté validateur.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| Naviguer entre les **4 onglets** ; **FAB central** présent | `tabs.test.ts` (4 onglets ordonnés + FAB au centre) ; export Metro : routes `/`, `/historique`, `/analytique`, `/profil` + `(tabs)` rendues | ✅ |
+| **Coquille de navigation** câblée | Export web : 16 routes statiques générées sans erreur (groupes `(auth)`/`(tabs)`) | ✅ |
+| **S'inscrire / se connecter / se déconnecter** depuis l'app (API 1.1) | Écrans `register`/`login`/`profil` câblés sur `/auth/register`+`/auth/login`+`/auth/logout` via `auth-api`/`auth-context` ; typecheck + bundle verts | ✅ (parcours live = api+app, cf. compte rendu) |
+| **Refresh en secure storage**, **survit au redémarrage** | `token-store.test.ts` : refresh persiste, relu par une nouvelle instance ; access (mémoire) perdu au « redémarrage » | ✅ |
+| **Access expiré rafraîchi automatiquement** (interceptor 401) | `api-client.test.ts` : 401 → refresh → rejeu (200) ; single-flight ; échec → purge + `onSessionExpired` ; `auth:false` n'intercepte pas | ✅ 6/6 |
+| Réponse de refresh **validée par le schéma partagé** | `api-client.test.ts` : `authTokensSchema` rejette une réponse non conforme | ✅ |
+| **Tokens UI** appliqués (palette, typo, espacements, mode clair) | `theme/` consommé par toutes les primitives ; `app.json` `userInterfaceStyle: light` ; export web rend les écrans | ✅ |
+| Aucun type d'API dupliqué | DTO/schémas importés de `@hpt/shared` (`AuthTokens`, `CompteSortie`, `authTokensSchema`, `LoginDto`, `RegisterDto`) | ✅ |
+| `pnpm lint` | `biome check .` | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` | Vitest — 40 (shared) + 13 (api) + **16 (app : 5 token-store + 6 interceptor + 5 nav)** | ✅ 69/69 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** OK (1030 modules) | ✅ vert |
+| CI | job `ci` (install→lint→typecheck→test→build) — couvre désormais les tests app | ✅ |
