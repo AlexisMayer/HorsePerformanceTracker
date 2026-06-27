@@ -963,3 +963,146 @@ Découpage de `app/src/` **par responsabilité**, sans arbre figé d'avance
 | `pnpm test` | Vitest — 40 (shared) + 13 (api) + **16 (app : 5 token-store + 6 interceptor + 5 nav)** | ✅ 69/69 |
 | `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** OK (1030 modules) | ✅ vert |
 | CI | job `ci` (install→lint→typecheck→test→build) — couvre désormais les tests app | ✅ |
+
+---
+
+## Lot 2.1 — Cheval (CRUD fiche cheval) · 2026-06-27
+
+Ouverture de la **Phase 2 (Capture)** : module **`horses`** (Architecture §3) —
+**CRUD de la fiche cheval**, **scopé au compte authentifié**, + sa tranche front
+(créer/éditer/supprimer un cheval depuis l'app). Première entité métier détenue
+par l'utilisateur ; **dépend de `auth-account`** (1.1, garde JWT). On **ne
+recrée pas** le schéma socle (`Cheval` posée en 0.3) : on remplit le module qui
+l'expose. Strictement le lot 2.1 : ni séance/saisie (2.2/2.3), ni archivage
+(4.3), ni quota/gating de tier (4.1), ni multi-cheval réel (Pro, 4.x), ni
+onboarding (3.5).
+
+### Emplacement (décisions tranchées)
+
+- **Module API** : `api/src/horses/` (par domaine, §1/§3) — `horses.service`
+  (domaine, CRUD scopé), `horses.controller` (frontière HTTP sous
+  `JwtAccessGuard`), `horses.errors` (`ChevalNotFoundError` typée),
+  `horses.module`. Enregistré dans `app.module.ts`. La DB vient du
+  `DatabaseModule` `@Global` (1.1) ; `PassportModule` importé pour que la garde
+  `jwt-access` (stratégie enregistrée par `auth-account`) protège les routes.
+- **Contrats `shared`** : `packages/shared/src/schemas/cheval.ts` étendu —
+  `chevalCréerSchema` (existait), **`chevalModifierSchema`** (PATCH partiel) et
+  **`chevalSortieSchema`** (projection détail/liste) ajoutés + types inférés.
+- **Tranche front** : `app/src/horses/` — `horses-api` (surface HTTP),
+  `horses-context` (provider + `useHorses` : liste, mutations, **cheval
+  courant**), `horse-form` (formulaire partagé création/édition), `horse-selector`
+  (chip d'en-tête), `error-messages`, barrel. Écrans (routes Expo Router hors
+  groupes, au Stack racine) : `app/horses/index` (liste « Mes chevaux »),
+  `app/horses/new` (création), `app/horses/[id]` (édition + suppression). Primitive
+  UI générique ajoutée : `ui/BackHeader` (en-tête des écrans poussés).
+
+### Décisions tranchées (et pourquoi)
+
+- **Forme des DTO `shared` chevaux.** Trois schémas, une responsabilité chacun :
+  - `chevalCréerSchema` (entrée création) — `nom`, `niveau` (`amateur | pro`),
+    `hauteur_de_référence` (sur un cran du référentiel §0), `âge`/`race`
+    **optionnels**. `compte_id` **absent du corps** : posé par le serveur depuis
+    le compte authentifié.
+  - `chevalModifierSchema` (entrée PATCH) — **tous les champs optionnels** (un
+    champ absent reste inchangé) ; `âge`/`race` acceptent **`null`** pour les
+    **effacer**. Un `superRefine` **rejette un corps vide** (400) — pas de PATCH
+    muet.
+  - `chevalSortieSchema` (sortie détail & liste) — projection de la fiche
+    (`âge`/`race` rendus `null`, pas omis) ; `.strip()` par défaut → parser la
+    ligne brute ne peut **rien laisser fuir**. Distinct de `chevalExportSchema`
+    (1.3) qui imbrique l'arbre des séances ; ce dernier **réutilise** désormais
+    `chevalSortieSchema` (`.extend({ seances })`) — **aucune forme dupliquée**.
+- **Modèle d'autorisation = scoping au compte dans la requête SQL.** Toute
+  opération porte le `compteId` du jeton d'accès (`@CurrentUser`, jamais l'URL)
+  et filtre par `compte_id` **dans le `WHERE`** (`and(eq(id), eq(compte_id))`).
+  Un compte ne voit/édite/supprime que **ses** chevaux. Viser le cheval d'un
+  autre compte → **404** (`ChevalNotFoundError`), **pas 403** : un 403
+  révélerait l'existence ; le 404 ne fuite rien (décision : pas d'oracle
+  d'existence). Les `:id` malformés sont rejetés en **400** par `ParseUUIDPipe`
+  (avant la base). Validation Zod à la frontière, règles métier au service,
+  erreurs de domaine typées (Architecture §5).
+- **Suppression = purge dure en cascade**, en **réutilisant les cascades de
+  0.3** (`Cheval → Séance → {Obstacle, Tour, Contexte}`). `DELETE` scopé au
+  compte ; tout l'historique tombe par `ON DELETE CASCADE`. **Pas de soft
+  delete** (cohérent avec 1.3). Prouvé « aucune ligne résiduelle » par e2e
+  (comptage par `cheval_id`/`seance_id` après suppression → 0 partout). Supprimer
+  un cheval **n'affecte pas** les autres chevaux du compte (testé).
+- **Cheval courant & sélecteur d'en-tête (ce qui est posé).** `HorsesProvider`
+  expose `currentHorse` = **premier (et unique en v1) cheval** du compte —
+  suffisant pour que la coquille (Feed/Historique/Analytique) sache quoi
+  afficher. Le **sélecteur d'en-tête** (`HorseSelector`) remplace le placeholder
+  *inerte* de 1.4 : il affiche le nom du cheval courant (ou « Aucun cheval ») et
+  **mène à la gestion** (`/horses`). Il **n'opère aucune bascule multi-cheval**
+  (le dropdown entre plusieurs chevaux relève du Pro, 4.x). Mono-cheval suffit.
+- **Client HTTP authentifié réutilisé, pas redupliqué.** `auth-context` **expose**
+  désormais son `ApiClient` (access en mémoire + interceptor 401 de 1.4) ;
+  `horses-context` consomme **le même** client (même session, même
+  rafraîchissement) plutôt que d'en recréer un (qui ne partagerait pas l'access
+  en mémoire). État serveur via **TanStack Query** (liste activée seulement si
+  authentifié, clé portée par le compte ; mutations invalident la liste).
+- **Formulaire minimal partagé** (création + édition) : `nom` + `niveau`
+  (SegmentedControl) + `hauteur_de_référence` requis, `âge`/`race` facultatifs
+  (Spec §2.2). Le **slider de hauteur** dédié est différé à la saisie (2.x) — ici
+  un champ numérique validé sur le référentiel §0 (`estHauteurValide`) suffit ;
+  le serveur reste l'autorité. **Suppression avec confirmation explicite**
+  (`Alert` destructif rappelant la purge de l'historique) — qualité de plancher.
+- **Aucun quota/tier dans `horses`.** Le plafond (1 en gratuit/premium, illimité
+  en pro) **n'est pas** vérifié ici : c'est l'affaire de la **garde d'entitlement
+  (4.1)**, autorité serveur. La capacité se construit ici, la garde la composera
+  (même précédent que 1.1 : on ne disperse pas les checks de `tier`).
+
+### Écarts vs cadrage (consignés)
+
+- **Suppression d'un cheval AJOUTÉE — résolution du renvoi de 1.3.** Le journal
+  1.3 renvoyait « suppression d'un cheval seul → 2.1 » ; c'est fait
+  (`DELETE /horses/:id`). Cela **étend la DoD roadmap** du lot 2.1 (qui ne
+  nommait que création/édition) — écart **assumé et consigné**, cohérent avec la
+  purge dure de 1.3 (réutilisation des cascades 0.3, pas de soft delete).
+- **Refactor mineur de 1.3 (dédup, aucun contrat changé).** `chevalExportSchema`
+  passe de champs en clair à `chevalSortieSchema.extend({ seances })`. Forme et
+  comportement **identiques** (mêmes champs, strip préservé) ; l'export reste
+  prouvé par `account-export.test.ts` (inchangé, vert). Même esprit que
+  l'extraction de `motDePasseSchema` en 1.2.
+- **`auth-context` expose `ApiClient`** (champ `client` ajouté à
+  `AuthContextValue`). Extension non destructive : aucun appelant existant n'est
+  cassé ; elle évite de dupliquer le client/token-store côté `horses`.
+- **`ScreenHeader` : `horseSelectorPlaceholder` → slot générique `right`.** Le
+  placeholder inerte de 1.4 est remplacé par un emplacement droit agnostique que
+  les onglets remplissent avec `HorseSelector` (logique de fonctionnalité hors
+  `ui/`). Les 3 écrans d'onglet sont mis à jour en conséquence.
+- **Pas de migration, pas de nouveau type d'entité.** Le schéma `Cheval` (0.3) et
+  ses cascades suffisent ; le lot est purement additif en code applicatif
+  (service + controller + contrats + front).
+
+### Points laissés ouverts (reports explicites)
+
+- **Quota de chevaux → lot 4.1.** Aucun plafond appliqué ici (gratuit/premium = 1,
+  pro = illimité) : garde d'entitlement serveur, à composer par-dessus la
+  capacité CRUD posée. (Même report que 1.1 pour le `tier`.)
+- **Archivage d'un cheval (lecture seule, hors quota) → lot 4.3.** Aucune colonne
+  `archivé` ni logique d'archivage ici — différé tel quel.
+- **Bascule multi-cheval (Pro) → 4.x.** `currentHorse` est mono-cheval ; le
+  sélecteur d'en-tête est *visuellement prévu* mais ne bascule pas entre plusieurs
+  chevaux. Le câblage d'un vrai switcher (et la persistance du cheval choisi)
+  viendra avec le multi-cheval réel.
+- **Saisie / FAB** : inchangé — le **FAB reste placeholder** (la saisie est
+  2.2/2.3) ; le cheval existe mais on ne loggue encore rien.
+- **Onboarding guidé (3.5)** : réutilisera l'écran de création — non construit ici.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Créer** un cheval lié au compte authentifié | e2e `horses.spec.ts` : `POST /horses` 201, `compte_id` = compte courant, projection complète | ✅ |
+| **Lister/lire** ne renvoie que **ses** chevaux | e2e : `GET /horses` du compte A = ses 2 chevaux (pas celui de B) ; détail scopé | ✅ |
+| **Éditer** met à jour ; `niveau` ∈ `amateur \| pro` | e2e : PATCH nom/niveau/hauteur + effacement `âge`/`race` (null) ; `niveau` hors enum → 400 ; corps vide → 400 | ✅ |
+| **Supprimer** purge le cheval **et** son historique (cascade) | e2e : seed séances/obstacles/tours/contexte → `DELETE` 204 → comptage = 0 partout ; autres chevaux intacts | ✅ |
+| **Autorisation prouvée** (isolation entre comptes) | e2e : B lit/édite/supprime un cheval de A → **404** ; cheval de A inchangé ; `POST` sans jeton → 401 | ✅ |
+| **Depuis l'app** : créer/éditer/supprimer (câblé API) | écrans `horses/new` · `horses/[id]` (édition + suppression confirmée) câblés via `horses-api`/`horses-context` ; typecheck + bundle verts | ✅ |
+| Aucun type d'API dupliqué | DTO/schémas importés de `@hpt/shared` (`ChevalCréerDto`, `ChevalModifierDto`, `ChevalSortie`) ; `chevalExportSchema` réutilise `chevalSortieSchema` | ✅ |
+| `pnpm lint` | `biome check .` | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — 46 (shared, +6 cheval) + 13 (api) + **21 (app, +5 horses-api)** | ✅ 80/80 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 7 (0.3) + 9 (1.1) + 10 (1.2) + 7 (1.3) + **15 (horses 2.1)** | ✅ 48/48 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 2.1 inclus) — inchangée (aucune migration) | ✅ |

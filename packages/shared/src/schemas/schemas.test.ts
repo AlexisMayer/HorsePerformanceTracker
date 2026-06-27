@@ -1,6 +1,11 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { Compte } from '../types/compte';
-import { chevalCréerSchema } from './cheval';
+import {
+  type ChevalSortie,
+  chevalCréerSchema,
+  chevalModifierSchema,
+  chevalSortieSchema,
+} from './cheval';
 import { type CompteSortie, compteCréerSchema, compteSortieSchema } from './compte';
 import { obstacleCréerSchema } from './obstacle';
 import { hauteurSchema } from './referentiel';
@@ -69,6 +74,51 @@ describe('chevalCréerSchema', () => {
       chevalCréerSchema.safeParse({ nom: 'Pampa', niveau: 'amateur', hauteur_de_référence: 111 })
         .success,
     ).toBe(false);
+  });
+});
+
+describe('chevalModifierSchema (DTO d’édition, PATCH partiel)', () => {
+  it('accepte une mise à jour partielle (un seul champ)', () => {
+    expect(chevalModifierSchema.safeParse({ niveau: 'pro' }).success).toBe(true);
+  });
+
+  it('n’accepte que amateur | pro pour le niveau', () => {
+    expect(chevalModifierSchema.safeParse({ niveau: 'expert' }).success).toBe(false);
+  });
+
+  it('autorise null pour effacer un champ facultatif (âge / race)', () => {
+    const parsed = chevalModifierSchema.parse({ âge: null, race: null });
+    expect(parsed).toEqual({ âge: null, race: null });
+  });
+
+  it('rejette un corps vide (rien à éditer)', () => {
+    expect(chevalModifierSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('valide encore la hauteur sur un cran du référentiel', () => {
+    expect(chevalModifierSchema.safeParse({ hauteur_de_référence: 115 }).success).toBe(true);
+    expect(chevalModifierSchema.safeParse({ hauteur_de_référence: 113 }).success).toBe(false);
+  });
+});
+
+describe('chevalSortieSchema (DTO de sortie)', () => {
+  it('projette une ligne brute et retire toute clé inattendue (jamais de fuite)', () => {
+    const sortie = chevalSortieSchema.parse({
+      id: '33333333-3333-3333-3333-333333333333',
+      created_at: new Date(),
+      updated_at: new Date(),
+      compte_id: '44444444-4444-4444-4444-444444444444',
+      nom: 'Pampa',
+      niveau: 'amateur',
+      hauteur_de_référence: 110,
+      âge: null,
+      race: null,
+      // Clé parasite : doit disparaître à la projection.
+      secret_interne: 'ne-doit-pas-fuiter',
+    });
+    expect(sortie).not.toHaveProperty('secret_interne');
+    expect(sortie.nom).toBe('Pampa');
+    expectTypeOf<ChevalSortie>().not.toHaveProperty('secret_interne');
   });
 });
 

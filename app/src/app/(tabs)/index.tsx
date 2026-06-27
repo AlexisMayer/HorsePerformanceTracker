@@ -1,3 +1,4 @@
+import { HorseSelector } from '../../horses';
 import { Screen } from '../../ui';
 import { EmptyState } from '../../ui/EmptyState';
 import { ScreenHeader } from '../../ui/ScreenHeader';
@@ -10,7 +11,7 @@ import { ScreenHeader } from '../../ui/ScreenHeader';
 export default function FeedScreen() {
   return (
     <Screen edges={['left', 'right']} contentStyle={{ flex: 1, padding: 0, gap: 0 }}>
-      <ScreenHeader title="Feed" horseSelectorPlaceholder />
+      <ScreenHeader title="Feed" right={<HorseSelector />} />
       <EmptyState
         icon="trophy-outline"
         title="Ton fil prendra vie ici"

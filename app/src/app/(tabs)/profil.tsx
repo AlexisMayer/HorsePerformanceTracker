@@ -1,7 +1,10 @@
+import { Ionicons } from '@expo/vector-icons';
 import type { Tier } from '@hpt/shared';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { useAuth } from '../../auth';
+import { useHorses } from '../../horses';
 import { colors, spacing } from '../../theme';
 import { Badge, Button, Card, Screen, Text } from '../../ui';
 import { ScreenHeader } from '../../ui/ScreenHeader';
@@ -25,6 +28,8 @@ const TYPE_LABELS: Record<string, string> = {
  */
 export default function ProfilScreen() {
   const { account, signOut, resendEmailVerification } = useAuth();
+  const { horses } = useHorses();
+  const router = useRouter();
   const [verificationSent, setVerificationSent] = useState(false);
   const [resending, setResending] = useState(false);
 
@@ -55,6 +60,28 @@ export default function ProfilScreen() {
           ) : null}
         </View>
       </Card>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Mes chevaux, ${horses.length} enregistré${horses.length > 1 ? 's' : ''}`}
+        onPress={() => router.push('/horses')}
+        style={({ pressed }) => pressed && styles.pressed}
+      >
+        <Card>
+          <View style={styles.rowBetween}>
+            <View style={styles.rowLeft}>
+              <Ionicons name="paw" size={20} color={colors.primary} />
+              <Text variant="bodyStrong">Mes chevaux</Text>
+            </View>
+            <View style={styles.rowLeft}>
+              <Text variant="body" color="textMuted">
+                {horses.length}
+              </Text>
+              <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+            </View>
+          </View>
+        </Card>
+      </Pressable>
 
       {account && !account.email_verified ? (
         <Card style={styles.noticeCard}>
@@ -97,6 +124,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.xs,
+  },
+  rowBetween: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  rowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  pressed: {
+    opacity: 0.7,
   },
   noticeCard: {
     borderColor: colors.celebration,

@@ -1,7 +1,7 @@
 import { z } from 'zod';
+import { chevalSortieSchema } from './cheval';
 import { compteSortieSchema } from './compte';
 import {
-  niveauChevalSchema,
   provenanceSchema,
   typeObstacleSchema,
   typeObstacleSimpleSchema,
@@ -107,15 +107,12 @@ export const seanceExportSchema = z.object({
 
 export type SeanceExport = z.infer<typeof seanceExportSchema>;
 
-/** Cheval exporté (Modèle §3) avec l'arbre de ses séances. */
-export const chevalExportSchema = z.object({
-  ...champsTechniquesSortie,
-  compte_id: z.string(),
-  nom: z.string(),
-  niveau: niveauChevalSchema,
-  hauteur_de_référence: z.number(),
-  âge: z.number().nullable(),
-  race: z.string().nullable(),
+/**
+ * Cheval exporté (Modèle §3) avec l'arbre de ses séances. Réutilise la
+ * projection de fiche `chevalSortieSchema` (lot 2.1) — aucune forme dupliquée :
+ * l'export n'ajoute que l'arbre imbriqué des séances.
+ */
+export const chevalExportSchema = chevalSortieSchema.extend({
   seances: z.array(seanceExportSchema),
 });
 
