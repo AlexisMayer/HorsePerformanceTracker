@@ -16,3 +16,4 @@ export * from './obstacle';
 export * from './refresh-token';
 export * from './seance';
 export * from './tour';
+export * from './verification-token';

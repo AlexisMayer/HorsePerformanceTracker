@@ -2,6 +2,13 @@ import { z } from 'zod';
 import { tierSchema, typeCompteSchema } from './referentiel';
 
 /**
+ * Politique de mot de passe **en clair** (à l'inscription et au reset) : 8→200
+ * caractères. Source unique réutilisée par `compteCréerSchema` et par le DTO de
+ * confirmation de réinitialisation (lot 1.2) — pas de règle dupliquée.
+ */
+export const motDePasseSchema = z.string().min(8).max(200);
+
+/**
  * DTO d'**entrée** — création d'un compte.
  *
  * On reçoit un `password` en clair (haché côté serveur en `password_hash`,
@@ -11,7 +18,7 @@ import { tierSchema, typeCompteSchema } from './referentiel';
 export const compteCréerSchema = z.object({
   email: z.string().email(),
   nom: z.string().min(1).max(120),
-  password: z.string().min(8).max(200),
+  password: motDePasseSchema,
   type: typeCompteSchema,
   tier: tierSchema.default('gratuit'),
 });

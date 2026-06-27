@@ -9,6 +9,37 @@ export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 export const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 /**
+ * Durées de vie des liens à usage unique (lot 1.2, ajustables) :
+ * - **vérification d'e-mail** : 24 h (pas urgent, l'utilisateur peut tarder) ;
+ * - **réinitialisation de mot de passe** : 1 h (fenêtre courte par sécurité).
+ */
+export const EMAIL_VERIFICATION_TTL_SECONDS = 24 * 60 * 60;
+export const PASSWORD_RESET_TTL_SECONDS = 60 * 60;
+
+export interface VerificationLinkConfig {
+  /** Base des liens d'action (deep link app / page web en prod). */
+  baseUrl: string;
+  /** Chemin du lien de vérification d'e-mail. */
+  emailVerificationPath: string;
+  /** Chemin du lien de réinitialisation de mot de passe. */
+  passwordResetPath: string;
+}
+
+/**
+ * Construction des liens d'e-mail. L'UI réelle (écrans, deep links) est le lot
+ * 1.4 ; ici on produit un lien **porteur du jeton**, loggé en dev par le
+ * `ConsoleMailer`. `APP_PUBLIC_URL` permet de pointer l'environnement cible
+ * sans toucher au code.
+ */
+export function loadVerificationLinkConfig(): VerificationLinkConfig {
+  return {
+    baseUrl: process.env.APP_PUBLIC_URL ?? 'http://localhost:3000',
+    emailVerificationPath: '/auth/verify-email',
+    passwordResetPath: '/auth/password-reset',
+  };
+}
+
+/**
  * Paramètres argon2 — recommandation OWASP (Password Storage Cheat Sheet) :
  * **argon2id**, mémoire 19 MiB (19456 KiB), `timeCost = 2`, `parallelism = 1`.
  * Bon compromis coût/sécurité pour un serveur applicatif, reproductible en CI.

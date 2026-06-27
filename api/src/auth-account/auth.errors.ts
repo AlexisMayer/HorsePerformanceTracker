@@ -37,3 +37,16 @@ export class RefreshTokenReuseError extends DomainError {
     super('Réutilisation d’un refresh token déjà tourné : famille révoquée.');
   }
 }
+
+/**
+ * Jeton de vérification d'e-mail ou de réinitialisation invalide, expiré ou
+ * déjà consommé (lot 1.2). `400` : la requête porte un jeton inexploitable. Le
+ * message public dit quoi faire (en redemander un), sans révéler la cause.
+ */
+export class InvalidVerificationTokenError extends DomainError {
+  readonly status = 400;
+  readonly publicMessage = 'Ce lien est invalide ou a expiré. Veuillez en demander un nouveau.';
+  constructor() {
+    super('Jeton de vérification/réinitialisation invalide, expiré ou déjà consommé.');
+  }
+}
