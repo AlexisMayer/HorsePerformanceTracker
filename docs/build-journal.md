@@ -405,3 +405,138 @@ sa preuve.
 | `pnpm build` | shared (tsc) + api (nest) + app (typecheck) | ✅ vert |
 | `db:verify` (preuve schéma, Postgres requis) | Vitest dédié — 7 tests sur PG local | ✅ 7/7 |
 | CI | job `ci` (sans DB) + job `db` (service `postgres:16`, `migrate` + `verify`) | ✅ posé |
+
+---
+
+## Lot 1.1 — Auth (inscription, login, JWT access/refresh, argon2) · 2026-06-27
+
+Premier lot de **logique métier** : socle d'authentification du module
+`auth-account` (Architecture §3). Inscription, connexion, JWT access/refresh
+avec **rotation** + **détection de réutilisation**, mots de passe **argon2**.
+Strictement le lot 1.1 : ni vérification e-mail (1.2), ni RGPD (1.3), ni UI
+(1.4), ni gating d'entitlement (4.1).
+
+### Emplacement (décision tranchée)
+
+- **Module** : `api/src/auth-account/` (par domaine, pas par couche — §1/§3) :
+  `auth.service` (domaine), `token.service` (cycle de vie des jetons),
+  `password.service` (argon2), `auth.controller` (frontière HTTP),
+  `jwt-access.strategy` + `jwt-access.guard` (Passport), `auth.errors`
+  (erreurs de domaine typées), `current-user.decorator`, `auth.config`.
+- **Schéma + migration** : `api/src/db/schema/refresh-token.ts` et
+  `api/drizzle/0001_dazzling_mojo.sql` — **là où l'api possède la DB** (cohérent
+  avec 0.3). Migration **additive** (CREATE TABLE seul, aucune table socle
+  touchée).
+- **Infra transverse** : `api/src/db/database.module.ts` (connexion runtime,
+  cf. écarts) ; `api/src/common/` (`zod-validation.pipe`, `domain-error`,
+  `domain-exception.filter`).
+- **Contrats** : `packages/shared/src/schemas/auth.ts` (extension de 0.2).
+
+### Décisions tranchées (et pourquoi)
+
+- **argon2id, m = 19456 KiB (19 MiB), t = 2, p = 1** (recommandation OWASP
+  *Password Storage Cheat Sheet*). Bon compromis coût/sécurité pour un serveur
+  applicatif, reproductible en CI. Paramètres centralisés dans
+  `auth.config.ts` (`ARGON2_OPTIONS`). Le hash encode ses paramètres → la
+  vérification n'a pas à les repréciser. Login : comparaison **systématique**
+  contre un hash factice quand l'e-mail est inconnu (pas d'oracle de timing).
+- **Durées de jetons** (Setup roadmap, ajustables) : **access 15 min, refresh
+  30 j**. `access` + `refresh` sont **deux JWT** signés avec des **secrets
+  distincts** (`JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET`) ; en prod via Secret
+  Manager (Stack §3.5), repli dev ergonomique (même posture que `DATABASE_URL`
+  en 0.3, jamais un secret réel commité).
+- **Modèle de rotation + détection de réutilisation par famille.** Le refresh
+  est un JWT dont le `jti` **est** l'`id` de la ligne `refresh_token`. On ne
+  stocke que le **SHA-256** du token (jamais le clair) : le secret est de haute
+  entropie (signature), un hash rapide suffit — argon2 reste réservé au mot de
+  passe (faible entropie). À chaque rotation : la ligne courante est révoquée
+  (`revoked_at` + `rotated_at` + `replaced_by`), un nouveau couple est émis dans
+  la **même famille** (`family_id`). **Présenter un refresh déjà tourné**
+  (`revoked_at` + `rotated_at` posés) = fuite probable → **révocation de toute
+  la famille** (`RefreshTokenReuseError`). Un refresh révoqué par logout
+  (`rotated_at` nul) est simplement rejeté, sans tuer la famille. Comparaison du
+  hash en temps constant (`timingSafeEqual`).
+- **Forme des DTO `shared`** (`schemas/auth.ts`) : entrées `registerSchema`
+  (= `compteCréerSchema` **sans `tier`** : le tier est posé `gratuit` côté
+  serveur, sans garde), `loginSchema`, `refreshSchema`, `logoutSchema` ; sortie
+  `authTokensSchema` (`access_token`, `refresh_token`, `token_type: 'Bearer'`,
+  `expires_in`). **Aucun type dupliqué** ; `register` renvoie la projection
+  `compteSortieSchema` (0.2), `login`/`refresh` un `AuthTokens`. **Aucun secret
+  en sortie** : `password_hash` n'apparaît dans aucun DTO (prouvé runtime +
+  garde de type `expectTypeOf`).
+- **Garde d'accès prouvée** : route protégée `GET /auth/me` (stratégie
+  `jwt-access`, n'accepte que les jetons `typ: 'access'`) → renvoie le compte
+  courant projeté sans secret. Le guard `JwtAccessGuard` est réutilisable par
+  les modules des lots suivants.
+- **Validation Zod à la frontière** via `ZodValidationPipe` (DTO de `shared`),
+  **règles métier dans le service** `auth-account` ; **erreurs de domaine
+  typées** (`DomainError` + `DomainExceptionFilter`) → réponses HTTP sobres,
+  détail interne journalisé, jamais de fuite (Architecture §5).
+
+### Écarts vs cadrage (consignés)
+
+- **Table `refresh_token` hors Modèle de données.** La rotation impose une
+  persistance serveur (révocation, détection de réutilisation) absente des
+  entités socle (0.3). Ajout par **migration Drizzle additive** : FK `compte_id`
+  en **`ON DELETE CASCADE`** (support structurel de la purge RGPD, lot 1.3),
+  `family_id`, `token_hash` (SHA-256), `expires_at`, `revoked_at`, `rotated_at`,
+  `replaced_by`, + index `compte_id` / `family_id`. Clés ASCII (table technique,
+  pas une entité du domaine → pas d'alignement `shared`).
+- **Dual-build de `@hpt/shared` (ESM + CJS).** Le point « interop ESM/CJS
+  *runtime* » laissé ouvert en 0.2/0.3 se concrétise ici : l'`api` (CommonJS)
+  consomme `shared` **à l'exécution** (schémas Zod aux frontières,
+  `compteSortieSchema`). Le build ESM existant a des imports de répertoire sans
+  extension (OK pour Metro/vite/esbuild, **pas** pour un `require`/`import` Node
+  pur). Ajout d'un **build CJS** (`tsconfig.cjs.json` → `dist/cjs/` +
+  `package.json` `type: commonjs` via `scripts/finalize-cjs.mjs`) et des
+  conditions d'export `require`/`default`. **Aucun contrat modifié** (types,
+  enums, Zod, calc inchangés). Prouvé : `node dist/main.js` démarre et exécute
+  le flux register→login (require CJS de `shared` résolu).
+- **Outillage Biome** : `unsafeParameterDecoratorsEnabled: true` (parser, pour
+  les décorateurs de paramètres NestJS `@Inject`) + override `useImportType:
+  off` sur `api/**` (la conversion en `import type` casse la DI réflexive de
+  NestJS sous `emitDecoratorMetadata`). `onlyBuiltDependencies += argon2`
+  (module natif, script de build autorisé). Aucune règle assouplie côté
+  `shared`/`app`.
+- **Connexion DB runtime** (`DatabaseModule`, jeton `DRIZZLE`, `@Global`) : 0.3
+  n'avait posé que le schéma + migrations ; `auth-account` est le **premier**
+  module à écrire en base à l'exécution. Module minimal (instance Drizzle typée
+  sur le schéma, pool `pg` paresseux), **pas** de repository générique (pas
+  d'abstraction prématurée).
+
+### Hors périmètre — points explicitement non tranchés
+
+- **`email_verified` au login** : `register` pose `email_verified = false` et
+  **n'envoie aucun e-mail** ; le **login est autorisé indépendamment de
+  `email_verified`**. Un éventuel gating sur la vérification est une **décision
+  produit non tranchée** → laissée à 1.2 (e-mail) / produit.
+- **Rate limiting** (anti-brute-force sur login/refresh) : **non implémenté** —
+  **point ouvert** (garde transverse type `@nestjs/throttler` à poser plus tard ;
+  pas trivial → consigné plutôt qu'improvisé).
+- **Pruning des refresh tokens** expirés/révoqués (tâche de nettoyage) : non
+  fait — **point ouvert** (la cascade RGPD les purge déjà à la suppression du
+  compte).
+- **Build ESM de `shared` non-Node-pur** (imports de répertoire sans extension) :
+  inchangé, sans incidence (Metro/vite/esbuild gèrent) ; seul le **CJS** est
+  requis pour le runtime `api`. Un alignement ESM strict reste possible plus tard.
+- Conformes au périmètre : **aucun** e-mail/reset (1.2), **aucune** logique RGPD
+  (1.3), **aucun** écran (1.4), **aucune** garde d'entitlement (4.1).
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| S'inscrire crée un compte, mot de passe **haché argon2** (jamais en clair/sortie) | e2e : body sans `password_hash`/`password` ; DB : `password_hash` ∈ `$argon2id$…`, ≠ clair | ✅ |
+| Se connecter renvoie access + refresh ; **identifiants invalides rejetés (401)** | e2e : couple + `Bearer`/`expires_in` ; mauvais mot de passe **et** e-mail inconnu → 401 | ✅ |
+| Rafraîchir renvoie un **nouveau couple** et **invalide l'ancien** (rotation prouvée) | e2e : nouveau refresh ≠ ancien ; réutiliser l'ancien → 401 ; **famille révoquée** (successeur → 401) | ✅ |
+| `logout` révoque le refresh courant | e2e : logout 204, puis refresh du même token → 401 | ✅ |
+| Garde d'accès JWT sur route protégée | e2e `GET /auth/me` : 401 sans/with mauvais jeton, 200 avec access valide | ✅ |
+| Aucun DTO de sortie ne contient `password_hash`/secret | Zod `compteSortie`/`authTokens` + tests runtime **et** `expectTypeOf` | ✅ |
+| Validation Zod à la frontière | e2e : entrée invalide → 400 ; erreurs de domaine typées → 401/409 sobres | ✅ |
+| Migration refresh token **s'applique** sur Postgres local | `drizzle-kit migrate` depuis zéro (0000 + 0001) ; FK `compte_id` = CASCADE | ✅ |
+| `pnpm lint` | `biome check .` | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` (ESM+CJS) puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — 32 (shared, +7 auth) + 11 (api : 6 alignement + 4 argon2 + 1 health) | ✅ 43/43 |
+| `pnpm build` | shared (tsc ESM+CJS) + api (nest) + app (typecheck) ; `node dist/main.js` boot OK | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 7 (schéma 0.3) + 9 (auth e2e 1.1) sur PG local | ✅ 16/16 |
+| CI | job `ci` (sans DB : lint/typecheck/test/build) + job `db` (`migrate` + `verify`, auth e2e inclus) | ✅ |

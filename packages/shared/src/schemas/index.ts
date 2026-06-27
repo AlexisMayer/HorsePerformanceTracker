@@ -1,3 +1,4 @@
+export * from './auth';
 export * from './cheval';
 export * from './compte';
 export * from './contexte';

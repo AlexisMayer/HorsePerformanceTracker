@@ -23,6 +23,7 @@
     "onlyBuiltDependencies": [
       "@biomejs/biome",
       "@swc/core",
+      "argon2",
       "esbuild"
     ]
   }
