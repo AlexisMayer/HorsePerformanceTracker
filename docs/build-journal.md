@@ -1106,3 +1106,178 @@ onboarding (3.5).
 | `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
 | `db:verify` (Postgres requis) | Vitest — 7 (0.3) + 9 (1.1) + 10 (1.2) + 7 (1.3) + **15 (horses 2.1)** | ✅ 48/48 |
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 2.1 inclus) — inchangée (aucune migration) | ✅ |
+
+---
+
+## Lot 2.2 — Séance — modèle & création minimale · 2026-06-27
+
+Module **`sessions`** (Architecture §3) : l'**enregistrement** d'une séance —
+collection d'`Obstacle` **ou** de `Tour` selon le type, avec **horodatage**,
+**provenance** et **clé d'idempotence** — par un **chemin de création minimal**
+(API + test, pas l'UX). `sessions` est le **gardien de l'inviolabilité** : toute
+écriture de séance passe par son service (Modèle §2). On **n'a pas** recréé le
+schéma socle (tables `Séance/Obstacle/Tour/Contexte` posées en 0.3) ; on **écrit
+dedans**. Strictement le lot 2.2 : ni saisie rapide/UX (2.3), ni
+édition/suppression (2.4), ni combinaisons réutilisables / `combinaison_ref`
+(2.5), ni métriques (3.2).
+
+### Emplacement (décisions tranchées)
+
+- **Module API** : `api/src/sessions/` (par domaine, §1/§3) — `sessions.service`
+  (domaine, porteur de l'inviolabilité), `sessions.controller` (frontière HTTP
+  sous `JwtAccessGuard`), `sessions.errors` (`SéanceNotFoundError` typée),
+  `sessions.module`. Enregistré dans `app.module.ts`. La DB vient du
+  `DatabaseModule` `@Global` (1.1) ; `PassportModule` importé pour la garde
+  `jwt-access` ; **`HorsesModule` importé** pour consommer `HorsesService`.
+- **`HorsesModule` exporte désormais `HorsesService`** (extension non
+  destructive de 2.1) : `sessions` **dépend de `horses`** et vérifie la
+  **propriété du cheval** via son service exposé, **jamais en lisant sa table**
+  (Architecture §1).
+- **Schéma + migration** : colonne `idempotency_key` ajoutée à
+  `api/src/db/schema/seance.ts` + migration additive
+  `api/drizzle/0003_romantic_iron_patriot.sql` — **là où l'api possède la DB**
+  (cohérent avec 0.3).
+- **Contrats `shared`** : `packages/shared/src/schemas/seance.ts` (entrée + sortie),
+  `champs-techniques.ts` (brique de sortie partagée), sorties d'`obstacle.ts` /
+  `tour.ts` / `contexte.ts` ; `account-export.ts` (1.3) **dédupliqué** pour les
+  réutiliser.
+
+### Décisions tranchées (et pourquoi)
+
+- **Clé d'idempotence — forme & portée d'unicité.** `idempotency_key` est un
+  **UUID généré côté client**, **fourni à la création** (requis dans le DTO),
+  colonne **`uuid NOT NULL`** sur `Séance`. **Portée d'unicité =
+  `UNIQUE(cheval_id, idempotency_key)`** (« minimum nécessaire ») : l'idempotence
+  porte sur « créer CETTE séance pour CE cheval » ; scoper au cheval (lui-même
+  scopé au compte par la propriété 2.1) **confine l'espace de noms de la clé au
+  propriétaire** — une clé d'un tenant ne peut pas entrer en collision avec celle
+  d'un autre (défense en profondeur, pas de DoS/fuite inter-comptes). Un UUID
+  client rend toute collision dans ce scope effectivement impossible hors réessai
+  légitime. **Hors Modèle de données socle** → clé ASCII, **exclue de
+  l'alignement `shared`** (cf. écarts).
+- **Idempotence applicative à deux niveaux.** (1) **Chemin rapide** : avant
+  d'écrire, le service cherche une séance `(cheval_id, idempotency_key)` ; si elle
+  existe, il la **renvoie** (pas de doublon). (2) **Filet de course concurrente** :
+  l'INSERT est tenté quand même ; une **violation d'unicité** (SQLSTATE `23505`)
+  est rattrapée → on relit et renvoie la séance gagnante. Robuste aux réessais
+  *séquentiels* (réseau) **et** *concurrents*. Le réessai renvoie **201** comme
+  la création (pas de cas particulier de statut — le corps prouve l'absence de
+  doublon ; consigné comme point mineur).
+- **Provenance — fournie & posée.** Le DTO d'entrée porte `provenance`
+  (`live | déclaratif`), **défaut `live`** appliqué par Zod
+  (`provenanceSchema.default('live')`). Le service **pose** la valeur à
+  l'écriture (`provenance: dto.provenance`). Le chemin **accepte `déclaratif`**
+  (amorçage) mais le **flux d'onboarding qui s'en sert est 3.5** (non construit).
+  On **persiste** seulement : l'**exclusion du `déclaratif` des agrégats** est
+  l'affaire des métriques (**3.2**), pas ici — rien n'est calculé.
+- **Inviolabilité posée à l'enregistrement (Modèle §2).** Le service pose
+  **`date = new Date()`** (horodatage), `provenance`, et laisse
+  **`date_modification` à `null`** (colonne nullable, non renseignée à
+  l'insert). La `date` métier est distincte des `created_at/updated_at`
+  techniques. L'application de l'immuabilité à l'**édition** (refus d'UPDATE
+  silencieux de `date`, pose auto de `date_modification`) reste pour **2.4** (pas
+  d'édition ici).
+- **Écriture transactionnelle (tout ou rien).** `Séance` + ses
+  `Obstacle`/`Tour` + `Contexte` (0..1) sont écrits dans **une** transaction
+  Drizzle (`db.transaction`). Insert parent → inserts enfants groupés → contexte.
+  Un enfant invalide **annule tout** (rollback prouvé). Le **type pilote la
+  structure** : `Concours` → tours, sinon obstacles ; **Plat = 0 obstacle**
+  accepté (validé par Zod `superRefine`, rejeu côté service par construction).
+- **Forme des DTO `shared` de séance.** *Entrée* `séanceCréerSchema`
+  (refactor de 0.2) : **`cheval_id` retiré du corps** (il vient de l'URL
+  `/horses/:id/sessions` et la propriété est vérifiée serveur — même posture que
+  `chevalCréerSchema` avec `compte_id`), **`idempotency_key` (UUID) requis
+  ajouté**, `provenance` défaut `live`, `obstacles[]` **ou** `tours[]`,
+  `contexte` (0..1), `superRefine` type↔structure conservé. *Sortie*
+  **`séanceSortieSchema`** (nouveau) : projection imbriquée
+  (champs séance + `obstacles[]` + `tours[]` + `contexte`), `date_modification`
+  nullable, **`idempotency_key` jamais projetée** (donnée technique ; `.strip()`
+  Zod la retire — prouvé runtime + garde de type). Sorties d'unités ajoutées
+  (`obstacleSortieSchema`, `tourSortieSchema`, `contexteSortieSchema`) sur une
+  brique commune `champsTechniquesSortie`.
+- **Contour exact du « chemin minimal ».** Trois routes ressource (Architecture
+  §5), toutes sous garde JWT + scoping compte : `POST /horses/:id/sessions`
+  (création transactionnelle, idempotente), `GET /horses/:id/sessions` (liste
+  d'un cheval), `GET /sessions/:id` (détail). Lecture **brute** (arbre imbriqué)
+  suffisante pour prouver la persistance — **le feed riche est 3.1**. **Pas** de
+  FAB/saisie soignée, **pas** d'aperçu des taux, **pas** de duplication (2.3).
+- **Autorisation = via le service `horses`, 404 sans fuite.** Création/liste
+  vérifient `horses.findOne(compteId, chevalId)` (lève `ChevalNotFoundError` →
+  404 si étranger). `GET /sessions/:id` lit la séance (table du module) puis
+  vérifie la propriété du cheval via `horses` ; toute séance non possédée devient
+  un **404 `SéanceNotFoundError`** (pas 403 : pas d'oracle d'existence, cohérent
+  avec 2.1). `:id` malformé → **400** (`ParseUUIDPipe`). Validation Zod à la
+  frontière, règles métier au service, erreurs de domaine typées.
+
+### Écarts vs cadrage (consignés)
+
+- **`idempotency_key` hors Modèle de données socle.** La table cible existe (0.3)
+  mais cette colonne **n'est pas** dans le Modèle (doc 3) : c'est un besoin
+  serveur (résilience d'enregistrement, Stack §4). Ajout par **migration Drizzle
+  additive** (`0003`, `ADD COLUMN` + `ADD CONSTRAINT UNIQUE`). Comme les tables
+  techniques `refresh_token`/`verification_token` (1.1/1.2) ne sont pas alignées
+  sur `shared`, cette colonne technique est **exclue de l'alignement** : la garde
+  `alignment.spec.ts` compare `NullToOptional<Omit<…seance, 'idempotency_key'>>`
+  au type de domaine `Séance` (qui reste un miroir fidèle du Modèle). La forme de
+  domaine `Séance` et la projection `séanceSortieSchema` **ne portent pas** la
+  clé.
+- **Refactor de `séanceCréerSchema` (0.2).** Le schéma de 0.2 portait `cheval_id`
+  dans le corps et **n'était utilisé que par ses tests**. Recâblé pour la route
+  ressource (cible dans l'URL, clé d'idempotence requise). Test `schemas.test.ts`
+  mis à jour en conséquence.
+- **Dédup de `account-export.ts` (1.3) — aucun contrat changé.** Les schémas de
+  sortie de l'export (`obstacleExportSchema`, `tourExportSchema`,
+  `contexteExportSchema`, `seanceExportSchema`) **réutilisent** désormais les
+  nouvelles projections de sortie (`*SortieSchema`) au lieu de redéclarer leur
+  forme — « aucune forme dupliquée » (Architecture §2), même esprit que le
+  refactor `chevalExportSchema → chevalSortieSchema` de 2.1. Formes **identiques**
+  → `account-export.test.ts` reste vert sans modification.
+- **Seeds de séance des lots antérieurs corrigés.** `idempotency_key` étant
+  `NOT NULL`, les `INSERT INTO seance (…)` directs des specs 0.3/1.3/2.1
+  (`schema.spec`, `account.spec`, `horses.spec`) reçoivent un
+  `gen_random_uuid()`. Changement de seed **non comportemental** (aucune
+  assertion modifiée). *Note migration* : `ADD COLUMN … NOT NULL` sans défaut
+  échouerait sur une table **peuplée** ; ici `seance` est vide en tout
+  environnement (2.2 est le **premier** chemin d'écriture de séance) → sûr. À
+  garder en tête si jamais un backfill devient nécessaire.
+
+### Points laissés ouverts (reports explicites)
+
+- **UX de saisie rapide → lot 2.3** : presets, sliders, compteurs « tap », chips,
+  duplication d'obstacle (« +5 cm ») et de séance, aperçu des taux. **Le FAB
+  reste placeholder** (1.4) ; ici seulement API + test.
+- **Édition / suppression de séance → 2.4** : création uniquement. L'application
+  *runtime* de l'immuabilité à l'édition (refus d'UPDATE de `date`, pose auto de
+  `date_modification`) sera posée là, par-dessus la *forme* déjà encodée (0.3).
+- **`combinaison_ref` & combinaisons réutilisables → 2.5** : l'obstacle de type
+  Combinaison ne porte ici que l'**inline** `nombre_d_éléments` + `éléments`
+  (détail saisi à la main), comme prévu en 0.3.
+- **Exclusion du `déclaratif` des agrégats → 3.2** : la provenance est
+  **persistée** ici ; la curation « live seul » est l'affaire des métriques.
+  Idem `difficulté` d'obstacle = couche contexte (persistée, **jamais agrégée**,
+  §1).
+- **Réessai / brouillon côté app (Stack §4)** : la brique serveur (idempotence)
+  est posée ; le brouillon local + réessai automatique de l'app viennent avec la
+  saisie **2.3** (l'interceptor 401 de 1.4 pose déjà le réessai sur jeton).
+- **Statut HTTP du réessai idempotent** : renvoie **201** (comme la création)
+  plutôt que 200 — choix de simplicité, à reconsidérer si un client a besoin de
+  distinguer création et rejeu.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| Enregistrer un entraînement (obstacles) **persisté & horodaté** ; `date_modification` null ; provenance posée | e2e `sessions.spec.ts` : `POST /horses/:id/sessions` 201 → `date` ~ now, `provenance: 'live'`, `date_modification: null` (corps **et** DB) ; relecture `GET /sessions/:id` | ✅ |
+| Enregistrer un **Concours** (tours) **et** un **Plat** (0 obstacle) | e2e : Concours → `tours.length = 2`, `obstacles = 0` ; Plat → `obstacles = 0`, `tours = 0` | ✅ |
+| **Réessai** même clé ⇒ **pas de doublon** (séance existante renvoyée) | e2e : 2ᵉ POST (même `idempotency_key`) → **même `id`** ; `count(seance) = 1`, `count(obstacle) = 1` | ✅ |
+| **Écriture atomique** : un enfant invalide ⇒ **rollback** | e2e : `service.create` avec un obstacle au **type hors enum** → rejette ; `count(seance) = 0` **et** `count(obstacle) = 0` | ✅ |
+| **Autorisation** : créer/lire la séance du cheval d'un **autre compte** refusé | e2e : B `POST`/`GET …/sessions`/`GET /sessions/:id` sur le cheval/la séance de A → **404** ; `POST` sans jeton → 401 ; rien d'écrit côté A | ✅ |
+| **Migration** `idempotency_key` **s'applique** sur Postgres local | `drizzle-kit migrate` (0000→0003) + e2e : colonne `uuid NOT NULL`, contrainte `UNIQUE (cheval_id, idempotency_key)` constatées | ✅ |
+| Aucun secret/technique en sortie | `séanceSortieSchema` strippe `idempotency_key` (runtime **+** `expectTypeOf`) | ✅ |
+| Aucun type d'API dupliqué | DTO/schémas de `@hpt/shared` ; `account-export` réutilise les `*SortieSchema` | ✅ |
+| `pnpm lint` | `biome check .` | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app ; alignement `Séance` avec `Omit`) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — 50 (shared, +4 séance) + 13 (api) + 21 (app) | ✅ 84/84 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 7 (0.3) + 9 (1.1) + 10 (1.2) + 7 (1.3) + 15 (2.1) + **14 (sessions 2.2)** | ✅ 62/62 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` 0→0003 + `verify`, e2e 2.2 inclus) | ✅ |

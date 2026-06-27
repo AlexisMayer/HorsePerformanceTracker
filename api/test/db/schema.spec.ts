@@ -218,8 +218,8 @@ describe('migration 0.3 appliquée sur Postgres local', () => {
     );
     const chevalId = h[0].id;
     const { rows: s } = await pool.query<{ id: string }>(
-      `INSERT INTO seance (cheval_id, type, date, provenance)
-       VALUES ($1, 'Parcours', now(), 'live') RETURNING id`,
+      `INSERT INTO seance (cheval_id, type, date, provenance, idempotency_key)
+       VALUES ($1, 'Parcours', now(), 'live', gen_random_uuid()) RETURNING id`,
       [chevalId],
     );
     const seanceId = s[0].id;

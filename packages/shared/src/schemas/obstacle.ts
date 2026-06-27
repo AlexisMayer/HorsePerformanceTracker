@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { champsTechniquesSortie } from './champs-techniques';
 import {
   compteurFautesSchema,
   hauteurSchema,
@@ -61,3 +62,26 @@ export const obstacleCréerSchema = z
   });
 
 export type ObstacleCréerDto = z.infer<typeof obstacleCréerSchema>;
+
+/**
+ * DTO de **sortie** — projection d'un obstacle persisté (Modèle §6.1). Les
+ * champs nullable en base (`difficulté` et les champs de combinaison inline) sont
+ * rendus en `null`, fidèles au sérialisé plutôt que silencieusement omis. Le
+ * `.strip()` par défaut de Zod retire toute clé inattendue : parser la ligne
+ * brute ne peut rien laisser fuir. Réutilisé par l'export RGPD (lot 1.3) — une
+ * seule forme partagée (Architecture §2).
+ */
+export const obstacleSortieSchema = z.object({
+  ...champsTechniquesSortie,
+  seance_id: z.string(),
+  type: typeObstacleSchema,
+  hauteur: z.number(),
+  répétitions: z.number(),
+  barres: z.number(),
+  refus: z.number(),
+  difficulté: z.number().nullable(),
+  nombre_d_éléments: z.number().nullable(),
+  éléments: z.array(typeObstacleSimpleSchema).nullable(),
+});
+
+export type ObstacleSortie = z.infer<typeof obstacleSortieSchema>;

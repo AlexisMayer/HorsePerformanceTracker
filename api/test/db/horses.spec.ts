@@ -68,8 +68,8 @@ async function count(sql: string, params: unknown[]): Promise<number> {
  */
 async function seedHistory(chevalId: string): Promise<{ seanceIds: string[] }> {
   const { rows: sLive } = await pool.query<{ id: string }>(
-    `INSERT INTO seance (cheval_id, type, date, provenance)
-     VALUES ($1, 'Parcours', now(), 'live') RETURNING id`,
+    `INSERT INTO seance (cheval_id, type, date, provenance, idempotency_key)
+     VALUES ($1, 'Parcours', now(), 'live', gen_random_uuid()) RETURNING id`,
     [chevalId],
   );
   const seanceLive = sLive[0].id;
@@ -81,8 +81,8 @@ async function seedHistory(chevalId: string): Promise<{ seanceIds: string[] }> {
   ]);
 
   const { rows: sDecl } = await pool.query<{ id: string }>(
-    `INSERT INTO seance (cheval_id, type, date, provenance)
-     VALUES ($1, 'Concours', now(), 'déclaratif') RETURNING id`,
+    `INSERT INTO seance (cheval_id, type, date, provenance, idempotency_key)
+     VALUES ($1, 'Concours', now(), 'déclaratif', gen_random_uuid()) RETURNING id`,
     [chevalId],
   );
   const seanceDecl = sDecl[0].id;

@@ -47,7 +47,14 @@ describe('schéma Drizzle ↔ types `@hpt/shared` (alignement au niveau type)', 
   });
 
   it('Séance', () => {
-    expectTypeOf<NullToOptional<typeof seance.$inferSelect>>().toEqualTypeOf<Séance>();
+    // `idempotency_key` est une colonne **technique** ajoutée au lot 2.2 (clé
+    // d'idempotence de création), **hors Modèle de données socle** : on l'exclut
+    // de l'alignement avec la forme de domaine `Séance`, même posture que les
+    // tables techniques `refresh_token` / `verification_token` (non alignées sur
+    // `shared`). Le reste de la ligne reste fidèle au domaine (cf. journal 2.2).
+    expectTypeOf<
+      NullToOptional<Omit<typeof seance.$inferSelect, 'idempotency_key'>>
+    >().toEqualTypeOf<Séance>();
   });
 
   it('Obstacle', () => {
