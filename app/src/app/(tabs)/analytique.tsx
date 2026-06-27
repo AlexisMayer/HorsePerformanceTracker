@@ -1,3 +1,4 @@
+import { HorseSelector } from '../../horses';
 import { Screen } from '../../ui';
 import { EmptyState } from '../../ui/EmptyState';
 import { ScreenHeader } from '../../ui/ScreenHeader';
@@ -10,7 +11,7 @@ import { ScreenHeader } from '../../ui/ScreenHeader';
 export default function AnalytiqueScreen() {
   return (
     <Screen edges={['left', 'right']} contentStyle={{ flex: 1, padding: 0, gap: 0 }}>
-      <ScreenHeader title="Analytique" horseSelectorPlaceholder />
+      <ScreenHeader title="Analytique" right={<HorseSelector />} />
       <EmptyState
         icon="stats-chart-outline"
         title="Tes diagnostics apparaîtront ici"

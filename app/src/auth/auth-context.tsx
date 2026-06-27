@@ -29,6 +29,12 @@ export interface AuthContextValue {
   status: AuthStatus;
   /** Compte courant (e-mail, `tier`, `type`…), ou `null` si déconnecté. */
   account: CompteSortie | null;
+  /**
+   * Client HTTP authentifié (access token + interceptor 401 de 1.4). Exposé pour
+   * que les modules de domaine (ex. `horses`, lot 2.1) réutilisent **le même**
+   * client — donc le même access en mémoire et le même rafraîchissement.
+   */
+  client: ApiClient;
   signIn: UseMutationResult<void, Error, LoginDto>;
   signUp: UseMutationResult<void, Error, RegisterDto>;
   signOut: UseMutationResult<void, Error, void>;
@@ -73,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     servicesRef.current = { tokenStore, client, authApi: createAuthApi(client) };
   }
-  const { tokenStore, authApi } = servicesRef.current;
+  const { tokenStore, authApi, client } = servicesRef.current;
 
   // `sessionEnabled` : on a (ou on vient d'obtenir) un refresh → tenter `me`.
   // `bootResolved` : la résolution initiale de session est terminée.
@@ -168,6 +174,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value: AuthContextValue = {
     status,
     account: meQuery.data ?? null,
+    client,
     signIn,
     signUp,
     signOut,

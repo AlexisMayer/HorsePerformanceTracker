@@ -1,3 +1,4 @@
+import { HorseSelector } from '../../horses';
 import { Screen } from '../../ui';
 import { EmptyState } from '../../ui/EmptyState';
 import { ScreenHeader } from '../../ui/ScreenHeader';
@@ -9,7 +10,7 @@ import { ScreenHeader } from '../../ui/ScreenHeader';
 export default function HistoriqueScreen() {
   return (
     <Screen edges={['left', 'right']} contentStyle={{ flex: 1, padding: 0, gap: 0 }}>
-      <ScreenHeader title="Historique" horseSelectorPlaceholder />
+      <ScreenHeader title="Historique" right={<HorseSelector />} />
       <EmptyState
         icon="time-outline"
         title="Tes séances s'archivent ici"

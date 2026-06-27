@@ -3,6 +3,7 @@
  * du lot 1.4. Les composants de saisie (compteurs « tap », slider de hauteur,
  * chips de type) arrivent avec leurs lots 2.x.
  */
+export { BackHeader } from './BackHeader';
 export { Badge } from './Badge';
 export { Button } from './Button';
 export { Card } from './Card';
