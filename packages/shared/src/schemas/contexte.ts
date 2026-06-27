@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { champsTechniquesSortie } from './champs-techniques';
 import { échelle1à5Schema } from './referentiel';
 
 /**
@@ -12,3 +13,19 @@ export const contexteCréerSchema = z.object({
 });
 
 export type ContexteCréerDto = z.infer<typeof contexteCréerSchema>;
+
+/**
+ * DTO de **sortie** — projection du contexte persisté, couche qualitative
+ * (Modèle §1/§3, 0..1 par séance). Champs optionnels rendus en `null`. Aucune de
+ * ces valeurs n'est jamais agrégée en métrique (§1). Réutilisé par l'export
+ * RGPD (lot 1.3).
+ */
+export const contexteSortieSchema = z.object({
+  ...champsTechniquesSortie,
+  seance_id: z.string(),
+  ressenti_global: z.number().nullable(),
+  énergie: z.number().nullable(),
+  note: z.string().nullable(),
+});
+
+export type ContexteSortie = z.infer<typeof contexteSortieSchema>;

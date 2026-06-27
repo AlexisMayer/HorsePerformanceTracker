@@ -3,8 +3,9 @@ import { AuthAccountModule } from './auth-account/auth-account.module';
 import { DatabaseModule } from './db/database.module';
 import { HealthModule } from './health/health.module';
 import { HorsesModule } from './horses/horses.module';
+import { SessionsModule } from './sessions/sessions.module';
 
 @Module({
-  imports: [DatabaseModule, HealthModule, AuthAccountModule, HorsesModule],
+  imports: [DatabaseModule, HealthModule, AuthAccountModule, HorsesModule, SessionsModule],
 })
 export class AppModule {}

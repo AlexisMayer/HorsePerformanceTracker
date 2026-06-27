@@ -1,12 +1,10 @@
 import { z } from 'zod';
 import { chevalSortieSchema } from './cheval';
 import { compteSortieSchema } from './compte';
-import {
-  provenanceSchema,
-  typeObstacleSchema,
-  typeObstacleSimpleSchema,
-  typeSéanceSchema,
-} from './referentiel';
+import { contexteSortieSchema } from './contexte';
+import { obstacleSortieSchema } from './obstacle';
+import { séanceSortieSchema } from './seance';
+import { tourSortieSchema } from './tour';
 
 /**
  * Contrats RGPD du **compte** (lot 1.3, module `auth-account`) : la forme de
@@ -39,72 +37,23 @@ export type AccountDeleteDto = z.infer<typeof accountDeleteSchema>;
 
 // ───────────────────────────── Export ─────────────────────────────
 
-/** Champs techniques communs, en **sortie** (id + horodatages). */
-const champsTechniquesSortie = {
-  id: z.string(),
-  created_at: z.date(),
-  updated_at: z.date(),
-};
-
 /**
- * Obstacle exporté (Modèle §6.1). Les champs nullable de la base (`difficulté`,
- * et les champs de combinaison) sont rendus en `null` — fidèles à ce qui est
- * sérialisé, plutôt que silencieusement omis.
+ * L'export **réutilise les projections de sortie** des entités (lot 2.2) plutôt
+ * que de redéclarer leur forme : aucune forme dupliquée (Architecture §2). La
+ * séance exportée inclut ses unités atomiques imbriquées et les **deux
+ * provenances** (`live` **et** `déclaratif`) — la curation des métriques (live
+ * seul) est une affaire de rapport, pas d'export brut.
  */
-export const obstacleExportSchema = z.object({
-  ...champsTechniquesSortie,
-  seance_id: z.string(),
-  type: typeObstacleSchema,
-  hauteur: z.number(),
-  répétitions: z.number(),
-  barres: z.number(),
-  refus: z.number(),
-  difficulté: z.number().nullable(),
-  nombre_d_éléments: z.number().nullable(),
-  éléments: z.array(typeObstacleSimpleSchema).nullable(),
-});
-
+export const obstacleExportSchema = obstacleSortieSchema;
 export type ObstacleExport = z.infer<typeof obstacleExportSchema>;
 
-/** Tour de concours exporté (Modèle §6.2). `sans_faute` reste dérivé (non stocké). */
-export const tourExportSchema = z.object({
-  ...champsTechniquesSortie,
-  seance_id: z.string(),
-  hauteur: z.number(),
-  barres: z.number(),
-  refus: z.number(),
-});
-
+export const tourExportSchema = tourSortieSchema;
 export type TourExport = z.infer<typeof tourExportSchema>;
 
-/** Contexte de séance exporté — couche qualitative (Modèle §1/§3, 0..1). */
-export const contexteExportSchema = z.object({
-  ...champsTechniquesSortie,
-  seance_id: z.string(),
-  ressenti_global: z.number().nullable(),
-  énergie: z.number().nullable(),
-  note: z.string().nullable(),
-});
-
+export const contexteExportSchema = contexteSortieSchema;
 export type ContexteExport = z.infer<typeof contexteExportSchema>;
 
-/**
- * Séance exportée (Modèle §3/§5), avec ses unités atomiques imbriquées. On
- * inclut les deux provenances (`live` **et** `déclaratif`) : la curation des
- * métriques (live seul) est une affaire de rapport, pas d'export brut.
- */
-export const seanceExportSchema = z.object({
-  ...champsTechniquesSortie,
-  cheval_id: z.string(),
-  type: typeSéanceSchema,
-  date: z.date(),
-  date_modification: z.date().nullable(),
-  provenance: provenanceSchema,
-  obstacles: z.array(obstacleExportSchema),
-  tours: z.array(tourExportSchema),
-  contexte: contexteExportSchema.nullable(),
-});
-
+export const seanceExportSchema = séanceSortieSchema;
 export type SeanceExport = z.infer<typeof seanceExportSchema>;
 
 /**

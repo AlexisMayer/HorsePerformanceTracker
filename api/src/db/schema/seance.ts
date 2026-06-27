@@ -1,4 +1,4 @@
-import { pgTable, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { pgTable, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { champsTechniques } from './champs-techniques';
 import { cheval } from './cheval';
 import { seanceProvenanceEnum, seanceTypeEnum } from './enums';
@@ -19,16 +19,29 @@ import { seanceProvenanceEnum, seanceTypeEnum } from './enums';
  * `sessions`** (Architecture §3), pas en base : le schéma en porte la *forme*,
  * pas la garde runtime. `ON DELETE CASCADE` vers `cheval`.
  *
- * Hors périmètre 0.3 (reportés, cf. journal) : la **clé d'idempotence** de
- * création (→ lot 2.2).
+ * **Clé d'idempotence (lot 2.2, reportée de 0.3).** `idempotency_key` est un
+ * **UUID généré côté client**, fourni à la création : un réessai avec la même clé
+ * ne crée pas de doublon (Architecture §5, Stack §4). Colonne **technique hors
+ * Modèle de données socle** (cf. journal 2.2) — d'où la clé ASCII et l'exclusion
+ * de l'alignement `shared`. **Portée d'unicité = `(cheval_id, idempotency_key)`**
+ * (« minimum nécessaire ») : l'idempotence porte sur « créer CETTE séance pour CE
+ * cheval » ; scoper au cheval (lui-même scopé au compte par la propriété, 2.1)
+ * confine l'espace de noms de la clé au propriétaire et évite qu'une clé d'un
+ * tenant interfère avec un autre. Un UUID client rend toute collision dans ce
+ * scope effectivement impossible, hors réessai légitime.
  */
-export const seance = pgTable('seance', {
-  ...champsTechniques,
-  cheval_id: uuid('cheval_id')
-    .notNull()
-    .references(() => cheval.id, { onDelete: 'cascade' }),
-  type: seanceTypeEnum('type').notNull(),
-  date: timestamp('date', { withTimezone: true, mode: 'date' }).notNull(),
-  date_modification: timestamp('date_modification', { withTimezone: true, mode: 'date' }),
-  provenance: seanceProvenanceEnum('provenance').notNull(),
-});
+export const seance = pgTable(
+  'seance',
+  {
+    ...champsTechniques,
+    cheval_id: uuid('cheval_id')
+      .notNull()
+      .references(() => cheval.id, { onDelete: 'cascade' }),
+    type: seanceTypeEnum('type').notNull(),
+    date: timestamp('date', { withTimezone: true, mode: 'date' }).notNull(),
+    date_modification: timestamp('date_modification', { withTimezone: true, mode: 'date' }),
+    provenance: seanceProvenanceEnum('provenance').notNull(),
+    idempotency_key: uuid('idempotency_key').notNull(),
+  },
+  (t) => [unique('seance_cheval_idempotency_unique').on(t.cheval_id, t.idempotency_key)],
+);

@@ -1,5 +1,6 @@
 export * from './account-export';
 export * from './auth';
+export * from './champs-techniques';
 export * from './cheval';
 export * from './compte';
 export * from './contexte';

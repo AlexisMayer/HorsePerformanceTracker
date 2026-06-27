@@ -9,7 +9,7 @@ import {
 import { type CompteSortie, compteCréerSchema, compteSortieSchema } from './compte';
 import { obstacleCréerSchema } from './obstacle';
 import { hauteurSchema } from './referentiel';
-import { séanceCréerSchema } from './seance';
+import { type SéanceSortie, séanceCréerSchema, séanceSortieSchema } from './seance';
 
 describe('compteCréerSchema (DTO d’entrée)', () => {
   it('valide une entrée correcte et applique le tier par défaut', () => {
@@ -159,21 +159,30 @@ describe('obstacleCréerSchema (champs combinaison conditionnels)', () => {
 });
 
 describe('séanceCréerSchema (structure pilotée par le type)', () => {
-  const cheval_id = '22222222-2222-2222-2222-222222222222';
+  const idempotency_key = '22222222-2222-2222-2222-222222222222';
 
   it('accepte un concours avec des tours et la provenance par défaut', () => {
     const parsed = séanceCréerSchema.parse({
-      cheval_id,
+      idempotency_key,
       type: 'Concours',
       tours: [{ hauteur: 130, barres: 0, refus: 0 }],
     });
     expect(parsed.provenance).toBe('live');
   });
 
+  it('accepte une provenance déclaratif explicite (amorçage)', () => {
+    const parsed = séanceCréerSchema.parse({
+      idempotency_key,
+      type: 'Plat',
+      provenance: 'déclaratif',
+    });
+    expect(parsed.provenance).toBe('déclaratif');
+  });
+
   it('refuse un concours qui porterait des obstacles', () => {
     expect(
       séanceCréerSchema.safeParse({
-        cheval_id,
+        idempotency_key,
         type: 'Concours',
         obstacles: [{ type: 'Oxer', hauteur: 110 }],
       }).success,
@@ -181,6 +190,40 @@ describe('séanceCréerSchema (structure pilotée par le type)', () => {
   });
 
   it('accepte un Plat sans obstacle (fréquence/régularité)', () => {
-    expect(séanceCréerSchema.safeParse({ cheval_id, type: 'Plat' }).success).toBe(true);
+    expect(séanceCréerSchema.safeParse({ idempotency_key, type: 'Plat' }).success).toBe(true);
+  });
+
+  it('exige une clé d’idempotence (UUID) — réessai sans doublon', () => {
+    expect(séanceCréerSchema.safeParse({ type: 'Plat' }).success).toBe(false);
+    expect(
+      séanceCréerSchema.safeParse({ idempotency_key: 'pas-un-uuid', type: 'Plat' }).success,
+    ).toBe(false);
+  });
+
+  it('ne porte aucune cible (`cheval_id`) dans le corps — elle vient de l’URL', () => {
+    const parsed = séanceCréerSchema.parse({ idempotency_key, type: 'Plat' });
+    expect(parsed).not.toHaveProperty('cheval_id');
+  });
+});
+
+describe('séanceSortieSchema (projection de lecture)', () => {
+  it('n’expose jamais la clé d’idempotence (donnée technique)', () => {
+    expectTypeOf<SéanceSortie>().not.toHaveProperty('idempotency_key');
+    const sortie = séanceSortieSchema.parse({
+      id: 'a',
+      created_at: new Date(),
+      updated_at: new Date(),
+      cheval_id: 'c',
+      type: 'Parcours',
+      date: new Date(),
+      date_modification: null,
+      provenance: 'live',
+      obstacles: [],
+      tours: [],
+      contexte: null,
+      // Clé technique présente dans la ligne brute : doit être retirée (strip).
+      idempotency_key: '22222222-2222-2222-2222-222222222222',
+    } as Record<string, unknown>);
+    expect(sortie).not.toHaveProperty('idempotency_key');
   });
 });

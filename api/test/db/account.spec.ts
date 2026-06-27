@@ -74,8 +74,8 @@ async function seedAccount(email: string): Promise<SeededAccount> {
 
   // Séance d'entraînement (live) avec obstacle + contexte.
   const { rows: sLive } = await pool.query<{ id: string }>(
-    `INSERT INTO seance (cheval_id, type, date, provenance)
-     VALUES ($1, 'Parcours', now(), 'live') RETURNING id`,
+    `INSERT INTO seance (cheval_id, type, date, provenance, idempotency_key)
+     VALUES ($1, 'Parcours', now(), 'live', gen_random_uuid()) RETURNING id`,
     [chevalId],
   );
   const seanceLive = sLive[0].id;
@@ -88,8 +88,8 @@ async function seedAccount(email: string): Promise<SeededAccount> {
 
   // Séance de concours (déclaratif) avec tour — l'export inclut le déclaratif.
   const { rows: sDecl } = await pool.query<{ id: string }>(
-    `INSERT INTO seance (cheval_id, type, date, provenance)
-     VALUES ($1, 'Concours', now(), 'déclaratif') RETURNING id`,
+    `INSERT INTO seance (cheval_id, type, date, provenance, idempotency_key)
+     VALUES ($1, 'Concours', now(), 'déclaratif', gen_random_uuid()) RETURNING id`,
     [chevalId],
   );
   const seanceDecl = sDecl[0].id;
