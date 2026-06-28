@@ -1281,3 +1281,180 @@ dedans**. Strictement le lot 2.2 : ni saisie rapide/UX (2.3), ni
 | `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
 | `db:verify` (Postgres requis) | Vitest — 7 (0.3) + 9 (1.1) + 10 (1.2) + 7 (1.3) + 15 (2.1) + **14 (sessions 2.2)** | ✅ 62/62 |
 | CI | job `ci` (sans DB) + job `db` (`migrate` 0→0003 + `verify`, e2e 2.2 inclus) | ✅ |
+
+---
+
+## Lot 2.3 — Saisie rapide · 2026-06-28
+
+Tranche **front** du module `sessions` (Architecture §4) : l'**UX de saisie
+rapide** par-dessus l'API de création de 2.2. C'est le **cœur de produit**
+(Spec §3, cible **< 30 s** sur une séance simple). On **active le FAB central**
+(placeholder depuis 1.4) ; on construit l'écran `/capture` (presets de type,
+chips d'obstacle, slider de hauteur, compteurs « tap », **duplication**
+d'obstacle/de séance, **aperçu des taux** via `shared`) et l'**enregistrement
+résilient** (clé d'idempotence client + brouillon local + réessai). Strictement
+le lot 2.3 : ni édition/suppression (2.4), ni combinaisons réutilisables (2.5),
+ni métriques/feed (3.x). **Zéro changement serveur ni `shared`** : l'API 2.2
+suffit (la duplication lit la **dernière séance** via `GET /horses/:id/sessions`
+existant).
+
+### Emplacement (décisions tranchées)
+
+- **Module app** : `app/src/sessions/` (par domaine, §1). Logique **pure**
+  (`.ts`, testée Vitest en Node) séparée des composants (`.tsx`, couverts par
+  `tsc` + export Metro) — même posture que 1.4 (RN+Vitest fragile au rendu) :
+  - `idempotency.ts` — `newIdempotencyKey()` (UUID client) ;
+  - `draft.ts` — modèle de brouillon + réducteur **pur** + projection vers le
+    DTO `shared` + duplication + aperçu des taux ;
+  - `submit.ts` — `submitSession()` (réessai/idempotence) ;
+  - `draft-store.ts` — brouillon persistant (backend injectable) ;
+  - `sessions-api.ts` — surface HTTP (création + lecture dernière séance) ;
+  - composants : `chips.tsx` (`ChipGroup`), `height-bar.tsx`, `tap-counter.tsx`,
+    `difficulty-marker.tsx`, `rate-preview.tsx`, `obstacle-editor.tsx`,
+    `tour-editor.tsx` ; hook `use-session-capture.ts` ; `error-messages.ts`.
+- **Route** : `app/src/app/capture.tsx` (`/capture`), poussée au Stack racine
+  par le **FAB** ((tabs)/_layout `router.push('/capture')`).
+
+### Décisions tranchées (et pourquoi)
+
+- **Architecture de l'écran : un réducteur pur + un hook d'orchestration + des
+  composants « bêtes ».** Tout l'état de saisie est un `SessionDraft` piloté par
+  `draftReducer` (actions `addObstacle`/`updateObstacle`/`duplicateObstacle`/
+  `setType`/…). Le hook `useSessionCapture` câble réducteur + persistance +
+  duplication + mutation ; les composants ne font que **rendre** et
+  **dispatcher**. Conséquence : la logique critique (projection DTO, duplication,
+  aperçu, réessai) est **testable en Node** sans rendu RN.
+- **Le type de séance pilote la structure, sans rien détruire.** `setType`
+  **préserve** les deux collections (obstacles **et** tours) ; seule la
+  collection pertinente au type est **projetée** dans le DTO (`Concours` →
+  `tours`, sinon `obstacles`). Un aller-retour de type ne perd donc pas la
+  saisie. **Plat** masque l'ajout d'obstacle (régularité, Spec §3.1) mais reste
+  enregistrable à 0 obstacle.
+- **Clé d'idempotence générée côté client, stable par brouillon.** `emptyDraft()`
+  fixe un `idempotency_key` (UUID v4) **à la création** du brouillon ; il reste
+  identique sur tous les réessais. `newIdempotencyKey()` préfère
+  `crypto.randomUUID()` et **replie** sur un UUID v4 RFC 4122
+  (`getRandomValues`, sinon `Math.random`) — toujours valide pour le
+  `z.string().uuid()` du serveur, sans dépendance native ajoutée.
+- **Brouillon + réessai (qualité de plancher, Stack §4) en deux temps.**
+  (1) **Réessai** : `submitSession` rejoue la **même** requête (donc la même clé)
+  sur erreur **transitoire** (réseau/`TypeError`, 5xx, 408, 429) avec **attente
+  exponentielle** ; une erreur **définitive** (400/401/404) remonte tout de
+  suite. Comme le serveur 2.2 dédoublonne sur `(cheval_id, idempotency_key)`, un
+  réessai **ne crée jamais de doublon** (si le 1ᵉʳ essai a écrit avant que la
+  réponse se perde, le rejeu renvoie la séance existante). (2) **Brouillon
+  local** : `draftStore` mirroir le brouillon (scopé au cheval) sur le stockage
+  appareil, réhydraté à l'ouverture, **effacé au succès** — « ne jamais perdre
+  une saisie », même après fermeture de l'app. Le client `useMutation` ne
+  re-réessaie pas (retry par défaut 0) : `submitSession` est l'unique pilote.
+- **Aperçu des taux = fonctions pures de `shared` (0.2), une seule
+  implémentation.** `obstaclePreviewRate` appelle `tauxObstacleSimple` /
+  `tauxCombinaison` ; un test prouve l'**égalité stricte** aperçu ↔ `shared`. Le
+  **dénominateur est exact** (répétitions, × `nombre_d_éléments` pour une
+  combinaison). L'aperçu n'est **pas** une surface feed/métrique (3.x) : juste un
+  retour local immédiat à la saisie.
+- **Duplication séance/obstacle.** « **Même obstacle, +5 cm** » conserve
+  type/répétitions/structure, monte d'un cran (borné 160), **repart à 0 faute**
+  (nouvelle tentative) ; le clone s'insère juste **après** la source.
+  **Duplication de la séance précédente** (`draftFromPreviousSession`) reprend
+  type + structure (hauteurs, répétitions, structure de combinaison), **fautes à
+  0**, **sans contexte**, et **clé d'idempotence neuve** (c'est une nouvelle
+  séance, pas un réessai). La dernière séance vient de `listForHorse` (dernier
+  élément de la liste ordonnée par `date`).
+- **Périmètre « inline » de la combinaison.** Le type Combinaison ouvre le
+  **compteur `nombre d'éléments`** (≥ 2) et, **au choix**, un **détail des
+  types** saisi à la main (un `ChipGroup` par slot, `resizeÉléments` synchronise
+  la longueur). Le détail n'est **émis au serveur que s'il est complet**
+  (`éléments.length === nombre_d_éléments`, exigence du schéma 2.2) ; incomplet →
+  omis, le dénominateur reste correct. **La sélection depuis une bibliothèque
+  réutilisable (`combinaison_ref`) est le lot 2.5** — pas ici. Fautes **au niveau
+  de la combinaison**.
+- **Contexte hors chemin critique.** Ressenti/énergie (échelle 1-5,
+  `DifficultyMarker` réutilisé) + note libre sont **repliés** derrière « Ajouter
+  un ressenti (optionnel) », jamais bloquants, **teinte Cuir** pour les
+  distinguer des faits objectifs (Vert sous-bois). Couche contexte, **jamais
+  agrégée** (Modèle §1).
+- **Voix d'interface (UI/UX §7).** Même mot du bouton à la confirmation :
+  « Enregistrer » → écran « **Enregistré** ». La **proposition de carte
+  partageable est le lot 3.3** : ici, simple confirmation puis « Terminé ».
+- **Composants réutilisables, sans abstraction prématurée.** `ChipGroup`
+  générique sert au **type de séance** et au **type d'obstacle/d'élément** ;
+  `HeightBar`, `TapCounter`, `DifficultyMarker`, `RatePreview` sont autonomes et
+  réutilisables (l'édition 2.4 les rejouera). `HeightBar` porte la **signature
+  « hauteur-comme-barre »** (UI/UX §2 : barre qui se remplit en Vert sous-bois).
+- **Aucun type dupliqué (Architecture §1/§2).** DTO d'entrée/sortie importés de
+  `@hpt/shared` (`SéanceCréerDto`, `SéanceSortie`, `Type*`, calc). La projection
+  brouillon → DTO est prouvée par des tests qui **re-valident avec
+  `séanceCréerSchema`** (le schéma serveur lui-même).
+
+### Écarts vs cadrage (consignés)
+
+- **Slider de hauteur rendu en « pas ±5 » plutôt qu'en curseur glissé.** Le
+  référentiel (60→160, pas de 5, gros chiffre tabulaire) et la signature barre
+  sont respectés, mais le réglage se fait par **deux grandes cibles −5/+5**
+  (≥ 48 px) au lieu d'un *thumb* glissé : plus robuste **terrain** (une main,
+  gants — §8) et sans dépendance native (`@react-native-community/slider` non
+  installé ; éviter un module natif fragile au build/web). La logique de pas est
+  pure (`stepHauteur`/`clampHauteur`), testée.
+- **Brouillon persistant sur `expo-secure-store` (backend injectable).** Réutilise
+  l'interface étroite du store de jetons (1.4) ; en prod le brouillon va dans le
+  secure storage. **Caveat consigné** : SecureStore déconseille les valeurs
+  > 2048 octets sur Android — un brouillon riche (beaucoup d'obstacles + longue
+  note) pourrait dépasser. L'écriture échoue alors **silencieusement** (capturée),
+  mais le **brouillon en mémoire + le réessai** protègent toujours contre une
+  coupure réseau ; seule la survie **au kill de l'app** se dégrade pour ces très
+  gros brouillons. Backend futur (`AsyncStorage`/`expo-file-system`) → point
+  ouvert.
+- **Réessai idempotent côté client : 4 tentatives, backoff 500 ms × 2ⁿ.** Valeurs
+  par défaut raisonnables, **injectables** (les tests passent un délai immédiat).
+  Le `useMutation` ne double pas le réessai (retry 0).
+- **Garde de plancher `canSave` plus stricte que le serveur.** Plat → toujours
+  enregistrable ; Gym/Parcours → ≥ 1 obstacle ; Concours → ≥ 1 tour. Le schéma
+  2.2 accepterait un entraînement non-Plat vide ; on **resserre côté client**
+  (UX) tout en laissant le serveur autorité.
+- **Tests app = logique pure (Node), pas de rendu RN.** Cohérent avec 1.4 : 42
+  nouveaux tests (`draft` 24, `submit` 7, `draft-store` 5, `idempotency` 4,
+  `sessions-api` 2). Le rendu/compilation des écrans est prouvé par `tsc` **et**
+  l'**export Metro web** (route `/capture` générée, 1090 modules).
+
+### Points laissés ouverts (reports explicites)
+
+- **Sélection de combinaison réutilisable → 2.5** : ici, combinaison **inline**
+  seulement (détail manuel). `combinaison_ref`, bibliothèque de compte, tri
+  anti-bloat et « enregistrer depuis une séance » viendront avec `combinations`.
+- **Proposition de carte partageable → 3.3** : l'enregistrement confirme
+  « Enregistré » ; la carte (`react-native-view-shot`, record mis en avant) et la
+  micro-célébration laiton sont le lot `sharing`.
+- **Édition / suppression → 2.4** : création uniquement. Le mode édition
+  **réutilisera ces composants** (éditeurs d'obstacle/tour, compteurs, slider) en
+  pré-remplissant le brouillon depuis une `SéanceSortie` (proche de
+  `draftFromPreviousSession`, mais en conservant clé/fautes/date) — l'application
+  runtime de l'immuabilité (refus d'UPDATE de `date`, pose de `date_modification`)
+  reste serveur.
+- **Backend de brouillon hors secure-store** (taille Android) : à rouvrir si un
+  brouillon volumineux doit survivre au kill de l'app (cf. écarts).
+- **Onboarding guidé → 3.5** : réutilisera cet écran (séance duplicable) ; le
+  tunnel pas-à-pas n'est pas construit ici.
+- **Tests de rendu de composants** (RTL/`@testing-library/react-native`) :
+  toujours non introduits (cohérent avec 1.4) — la logique critique est isolée et
+  testée en pur.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| Saisir une séance multi-obstacles en quelques taps puis l'enregistrer | Écran `/capture` : chips type → `HeightBar` → `TapCounter` rép/barres/refus, « + Ajouter un obstacle », bouton **Enregistrer** → `submitSession` (API 2.2) | ✅ (logique testée ; route bundlée) |
+| Taux par obstacle exacts (via `shared`) | `draft.test.ts` : `obstaclePreviewRate` **===** `tauxObstacleSimple`/`tauxCombinaison` | ✅ |
+| Combinaison correctement dénombrée (dénom = rép × éléments) | `draft.test.ts` (combinaison 2×3, dénom 6) ; `nombre_d_éléments` émis, `éléments` omis si incomplet | ✅ |
+| « Même obstacle, +5 cm » duplique en montant la hauteur | `draft.test.ts` : type/rép/structure gardés, +5 (borné 160), fautes à 0, clé locale neuve | ✅ |
+| Duplication de la séance précédente pré-remplit | `draft.test.ts` : `draftFromPreviousSession` (obstacles & concours), fautes à 0, **clé neuve** | ✅ |
+| Plat (0 obstacle) et Concours (tours) saisissables | `draft.test.ts` : `canSave`/`draftToCreateDto` Plat 0 obstacle, Concours tours ; UI bascule la structure | ✅ |
+| Brouillon + réessai : coupure passagère ne perd pas la saisie ni ne crée de doublon | `submit.test.ts` : coupure ×2 puis succès, **même `idempotency_key`** à chaque tentative ; 400 non réessayé ; `draft-store.test.ts` : survit au « redémarrage » | ✅ |
+| FAB central **actif** | `(tabs)/_layout.tsx` : `router.push('/capture')` ; export Metro : route `/capture` générée | ✅ |
+| Accessibilité terrain : cibles ≥ 44 px, contraste AA+, chiffres tabulaires | Cibles `minTouchTarget`(+) sur compteurs/slider/chips ; tokens 1.4 ; `StatText` tabulaire | ✅ |
+| Aucun type d'API dupliqué | DTO/calc importés de `@hpt/shared` ; projection re-validée par `séanceCréerSchema` | ✅ |
+| `pnpm lint` | `biome check .` | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` | Vitest — 50 (shared) + 13 (api) + **63 (app : 21 + 42 sessions)** | ✅ 126/126 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** (20 routes, `/capture` incluse, 1090 modules) | ✅ vert |
+| CI | job `ci` (install→lint→typecheck→test→build) — couvre les tests sessions app | ✅ |

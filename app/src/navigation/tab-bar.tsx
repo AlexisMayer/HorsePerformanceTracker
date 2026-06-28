@@ -43,8 +43,8 @@ TabBarButton.displayName = 'TabBarButton';
 
 /**
  * Bouton de saisie central (FAB) proéminent (UI/UX §5). Surélevé au-dessus de la
- * tab bar, Vert sous-bois, toujours à portée de pouce. **Placeholder** dans ce
- * lot : `onPress` ouvre un message — la saisie réelle est 2.2/2.3.
+ * tab bar, Vert sous-bois, toujours à portée de pouce. **Actif depuis le lot
+ * 2.3** : `onPress` ouvre l'écran de saisie rapide (`/capture`).
  */
 export function CaptureFab({ onPress }: { onPress: () => void }) {
   return (
