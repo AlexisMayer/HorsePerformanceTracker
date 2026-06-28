@@ -51,9 +51,9 @@ export const TABS: readonly TabConfig[] = [
 ];
 
 /**
- * Bouton de saisie central (FAB) — l'action cœur (UI/UX §5/§7). **Placeholder**
- * dans ce lot : la saisie réelle est 2.2/2.3, le FAB n'enregistre encore rien.
- * Ce n'est pas une route : c'est un bouton intercalé au centre de la tab bar.
+ * Bouton de saisie central (FAB) — l'action cœur (UI/UX §5/§7). **Actif depuis
+ * le lot 2.3** : il ouvre l'écran de saisie rapide (`/capture`). Ce n'est pas un
+ * onglet : c'est un bouton intercalé au centre de la tab bar.
  */
 export const CAPTURE_FAB = {
   label: 'Saisie',

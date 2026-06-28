@@ -1,5 +1,6 @@
+import { useRouter } from 'expo-router';
 import { TabList, TabSlot, Tabs, TabTrigger } from 'expo-router/ui';
-import { Alert, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CaptureFab, TabBarButton } from '../../navigation/tab-bar';
 import { CAPTURE_FAB_POSITION, TABS } from '../../navigation/tabs';
@@ -14,12 +15,13 @@ import { colors, spacing } from '../../theme';
  */
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const left = TABS.slice(0, CAPTURE_FAB_POSITION);
   const right = TABS.slice(CAPTURE_FAB_POSITION);
 
-  // FAB placeholder : la saisie réelle est 2.2/2.3 (hors périmètre 1.4).
+  // FAB **actif** (lot 2.3) : ouvre l'écran de saisie rapide d'une séance.
   const handleCapture = () => {
-    Alert.alert('Saisie', "La saisie d'une séance arrive au prochain lot.", [{ text: 'Compris' }]);
+    router.push('/capture');
   };
 
   return (
