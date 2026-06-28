@@ -15,7 +15,7 @@ const SAVED = { id: 's1' } as SéanceSortie;
 
 /** API factice : `create` programmable, `delay` immédiat (pas d'attente réelle). */
 function fakeApi(create: SessionsApi['create']): SessionsApi {
-  return { create, listForHorse: vi.fn() };
+  return { create, listForHorse: vi.fn(), get: vi.fn(), update: vi.fn(), remove: vi.fn() };
 }
 const noDelay = () => Promise.resolve();
 

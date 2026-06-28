@@ -39,6 +39,8 @@ export interface SessionCapture {
   retrying: boolean;
   /** Vrai une fois la séance enregistrée (confirmation « Enregistré »). */
   saved: boolean;
+  /** La séance créée (point d'entrée vers son édition/suppression — lot 2.4). */
+  savedSession: SéanceSortie | null;
   error: Error | null;
 }
 
@@ -136,6 +138,7 @@ export function useSessionCapture(chevalId: string): SessionCapture {
     saving: mutation.isPending,
     retrying,
     saved,
+    savedSession: mutation.data ?? null,
     error: mutation.error,
   };
 }

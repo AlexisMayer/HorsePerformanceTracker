@@ -1,4 +1,4 @@
-import type { SéanceCréerDto } from '@hpt/shared';
+import type { SéanceCréerDto, SéanceModifierDto } from '@hpt/shared';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiClient } from '../auth/api-client';
 import { createSessionsApi } from './sessions-api';
@@ -35,5 +35,27 @@ describe('createSessionsApi', () => {
     request.mockResolvedValueOnce([]);
     await createSessionsApi(client).listForHorse('h1');
     expect(request).toHaveBeenCalledWith('/horses/h1/sessions', { method: 'GET' });
+  });
+
+  it('get → GET /sessions/:id', async () => {
+    const { client, request } = fakeClient();
+    await createSessionsApi(client).get('s1');
+    expect(request).toHaveBeenCalledWith('/sessions/s1', { method: 'GET' });
+  });
+
+  it('update → PATCH /sessions/:id avec le corps du DTO d’édition', async () => {
+    const { client, request } = fakeClient();
+    const dto: SéanceModifierDto = {
+      type: 'Parcours',
+      obstacles: [{ type: 'Oxer', hauteur: 110, répétitions: 4, barres: 0, refus: 0 }],
+    };
+    await createSessionsApi(client).update('s1', dto);
+    expect(request).toHaveBeenCalledWith('/sessions/s1', { method: 'PATCH', body: dto });
+  });
+
+  it('remove → DELETE /sessions/:id', async () => {
+    const { client, request } = fakeClient();
+    await createSessionsApi(client).remove('s1');
+    expect(request).toHaveBeenCalledWith('/sessions/s1', { method: 'DELETE' });
   });
 });

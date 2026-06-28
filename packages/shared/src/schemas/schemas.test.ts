@@ -9,7 +9,12 @@ import {
 import { type CompteSortie, compteCréerSchema, compteSortieSchema } from './compte';
 import { obstacleCréerSchema } from './obstacle';
 import { hauteurSchema } from './referentiel';
-import { type SéanceSortie, séanceCréerSchema, séanceSortieSchema } from './seance';
+import {
+  type SéanceSortie,
+  séanceCréerSchema,
+  séanceModifierSchema,
+  séanceSortieSchema,
+} from './seance';
 
 describe('compteCréerSchema (DTO d’entrée)', () => {
   it('valide une entrée correcte et applique le tier par défaut', () => {
@@ -203,6 +208,49 @@ describe('séanceCréerSchema (structure pilotée par le type)', () => {
   it('ne porte aucune cible (`cheval_id`) dans le corps — elle vient de l’URL', () => {
     const parsed = séanceCréerSchema.parse({ idempotency_key, type: 'Plat' });
     expect(parsed).not.toHaveProperty('cheval_id');
+  });
+});
+
+describe('séanceModifierSchema (DTO d’édition, lot 2.4)', () => {
+  it('accepte une édition d’entraînement (collection d’obstacles)', () => {
+    const parsed = séanceModifierSchema.parse({
+      type: 'Parcours',
+      obstacles: [{ type: 'Oxer', hauteur: 110, répétitions: 4, barres: 1, refus: 0 }],
+    });
+    expect(parsed.obstacles).toHaveLength(1);
+  });
+
+  it('accepte une édition de concours (collection de tours)', () => {
+    expect(
+      séanceModifierSchema.safeParse({
+        type: 'Concours',
+        tours: [{ hauteur: 120, barres: 0, refus: 0 }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('garde l’invariant type↔structure (un entraînement ne porte pas de tours)', () => {
+    expect(
+      séanceModifierSchema.safeParse({
+        type: 'Parcours',
+        tours: [{ hauteur: 120, barres: 0, refus: 0 }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('n’expose aucun champ immuable : ni `date`, ni `provenance`, ni `idempotency_key`', () => {
+    // Sémantique de remplacement : les clés immuables sont retirées (strip),
+    // jamais une voie détournée pour réécrire `date`/`provenance`.
+    const parsed = séanceModifierSchema.parse({
+      type: 'Plat',
+      date: '2020-01-01',
+      provenance: 'déclaratif',
+      idempotency_key: '22222222-2222-2222-2222-222222222222',
+    } as Record<string, unknown>);
+    expect(parsed).not.toHaveProperty('date');
+    expect(parsed).not.toHaveProperty('provenance');
+    expect(parsed).not.toHaveProperty('idempotency_key');
+    expect(parsed.type).toBe('Plat');
   });
 });
 

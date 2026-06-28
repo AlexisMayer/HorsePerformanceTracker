@@ -1,89 +1,119 @@
 import { TYPES_SEANCE, type TypeSéance } from '@hpt/shared';
-import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
-import { useHorses } from '../horses';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, StyleSheet, View } from 'react-native';
 import {
   ChipGroup,
   canSave,
   DifficultyMarker,
+  formatDateModification,
   ObstacleEditor,
+  type SessionEdit,
   sessionErrorMessage,
   TourEditor,
-  useSessionCapture,
-} from '../sessions';
-import { colors, spacing } from '../theme';
-import { BackHeader, Button, Card, EmptyState, Screen, Text, TextField } from '../ui';
+  useSessionEdit,
+} from '../../../sessions';
+import { colors, spacing } from '../../../theme';
+import { BackHeader, Button, Card, EmptyState, Screen, Text, TextField } from '../../../ui';
 
 const TYPE_OPTIONS = TYPES_SEANCE.map((t) => ({ value: t, label: t }));
 
 /**
- * Écran de **saisie rapide d'une séance** (UI/UX §6.3, Spec §3) — déclenché par
- * le **FAB central** (désormais actif). Le **type de séance pilote la
- * structure** : obstacles (entraînement) ou tours (concours) ; un **Plat** ne
- * prend aucun obstacle (régularité). Duplication de la séance précédente et « +5
- * cm », aperçu des taux à la saisie, enregistrement résilient (idempotence +
- * brouillon/réessai). La proposition de **carte partageable est le lot 3.3** ;
- * ici, simple confirmation « Enregistré ».
+ * Écran d'**édition / suppression d'une séance** (lot 2.4, Spec §3.7) — câblé sur
+ * `PATCH /sessions/:id` et `DELETE /sessions/:id`. Réutilise **tels quels** les
+ * composants de saisie de 2.3 (chips de type, slider de hauteur, compteurs « tap »,
+ * éditeurs d'obstacle/tour, marqueur de ressenti), pré-remplis depuis la séance.
+ *
+ * **Honnêteté d'interface (UI/UX §7)** : l'édition n'est jamais silencieuse — la
+ * `date_modification` posée par le serveur s'affiche (« Modifié le … »), sans
+ * dramatiser. La suppression demande une **confirmation explicite** (action
+ * destructive : purge cascade de la séance et de ses unités).
  */
-export default function CaptureScreen() {
-  const { currentHorse } = useHorses();
+export default function EditSessionScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const edit = useSessionEdit(id);
 
-  if (!currentHorse) {
+  // La séance supprimée : on quitte l'écran (retour à l'origine).
+  useEffect(() => {
+    if (edit.removed) router.back();
+  }, [edit.removed, router]);
+
+  if (edit.loading) {
     return (
-      <Screen contentStyle={styles.empty}>
-        <BackHeader title="Nouvelle séance" onBack={() => router.back()} />
-        <EmptyState
-          icon="paw-outline"
-          title="Ajoute d'abord un cheval"
-          message="La saisie d'une séance se fait sur un cheval. Crée sa fiche pour commencer."
-        />
-        <Button label="Ajouter un cheval" onPress={() => router.replace('/horses/new')} />
+      <Screen contentStyle={styles.center}>
+        <BackHeader title="Séance" onBack={() => router.back()} />
+        <ActivityIndicator color={colors.primary} />
       </Screen>
     );
   }
 
-  return <CaptureBody chevalId={currentHorse.id} horseName={currentHorse.nom} />;
-}
+  if (edit.notFound || !edit.session) {
+    return (
+      <Screen contentStyle={styles.content}>
+        <BackHeader title="Séance" onBack={() => router.back()} />
+        <EmptyState
+          icon="alert-circle-outline"
+          title="Séance introuvable"
+          message="Cette séance n'existe plus."
+        />
+        <Button label="Retour" variant="secondary" onPress={() => router.back()} />
+      </Screen>
+    );
+  }
 
-function CaptureBody({ chevalId, horseName }: { chevalId: string; horseName: string }) {
-  const router = useRouter();
-  const capture = useSessionCapture(chevalId);
-  const { draft, dispatch } = capture;
-  const [showContexte, setShowContexte] = useState(false);
-
-  if (capture.saved) {
-    const savedId = capture.savedSession?.id;
+  if (edit.saved) {
     return (
       <Screen contentStyle={styles.confirm}>
         <EmptyState
           icon="checkmark-circle-outline"
-          title="Enregistré"
-          message={`La séance de ${horseName} est enregistrée.`}
+          title="Modifié"
+          message={
+            formatDateModification(edit.result?.date_modification ?? null) ||
+            'Tes modifications sont enregistrées.'
+          }
         />
-        {savedId ? (
-          <Button
-            label="Modifier la séance"
-            variant="secondary"
-            onPress={() => router.replace(`/sessions/${savedId}/edit`)}
-          />
-        ) : null}
         <Button label="Terminé" onPress={() => router.back()} />
       </Screen>
     );
   }
 
+  return <EditBody edit={edit} onDone={() => router.back()} />;
+}
+
+function EditBody({ edit, onDone }: { edit: SessionEdit; onDone: () => void }) {
+  const { draft, dispatch, session } = edit;
+  const [showContexte, setShowContexte] = useState(false);
+
+  // Ouvre la couche contexte d'emblée si la séance en portait déjà une.
+  useEffect(() => {
+    const c = session?.contexte;
+    if (c && (c.ressenti_global != null || c.énergie != null || c.note)) setShowContexte(true);
+  }, [session]);
+
   const isConcours = draft.type === 'Concours';
   const isPlat = draft.type === 'Plat';
-  const lastObstacleId = draft.obstacles.at(-1)?.localId;
+  const modifiéLe = formatDateModification(session?.date_modification ?? null);
+
+  const confirmDelete = () => {
+    Alert.alert(
+      'Supprimer cette séance ?',
+      'La séance et tout son détail seront définitivement supprimés. Cette action est irréversible.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        { text: 'Supprimer', style: 'destructive', onPress: () => edit.remove() },
+      ],
+    );
+  };
 
   return (
     <Screen scroll contentStyle={styles.content}>
-      <BackHeader title="Nouvelle séance" onBack={() => router.back()} />
-      <Text variant="body" color="textMuted">
-        {horseName}
-      </Text>
+      <BackHeader title="Modifier la séance" onBack={onDone} />
+      {modifiéLe ? (
+        <Text variant="caption" color="textMuted">
+          {modifiéLe}
+        </Text>
+      ) : null}
 
       <ChipGroup
         label="Type de séance"
@@ -91,14 +121,6 @@ function CaptureBody({ chevalId, horseName }: { chevalId: string; horseName: str
         value={draft.type}
         onChange={(type: TypeSéance) => dispatch({ kind: 'setType', type })}
       />
-
-      {capture.hasPrevious ? (
-        <Button
-          label="Reprendre la séance précédente"
-          variant="secondary"
-          onPress={capture.prefillFromPrevious}
-        />
-      ) : null}
 
       {isConcours ? (
         <View style={styles.list}>
@@ -118,7 +140,7 @@ function CaptureBody({ chevalId, horseName }: { chevalId: string; horseName: str
         <Card>
           <Text variant="h2">Séance de plat</Text>
           <Text variant="body" color="textMuted">
-            Pas d'obstacle à saisir : un plat nourrit la régularité. Enregistre-le tel quel.
+            Pas d'obstacle à saisir : un plat nourrit la régularité.
           </Text>
         </Card>
       ) : (
@@ -137,27 +159,16 @@ function CaptureBody({ chevalId, horseName }: { chevalId: string; horseName: str
             />
           ))}
           <Button label="+ Ajouter un obstacle" onPress={() => dispatch({ kind: 'addObstacle' })} />
-          {lastObstacleId ? (
-            <Button
-              label="Même obstacle, +5 cm"
-              variant="secondary"
-              onPress={() => dispatch({ kind: 'duplicateObstacle', localId: lastObstacleId })}
-            />
-          ) : null}
         </View>
       )}
 
-      {/* Couche contexte : optionnelle, hors du chemin critique (Spec §3.6). */}
       {showContexte ? (
         <Card>
           <DifficultyMarker
             label="Ressenti global (optionnel)"
             value={draft.contexte.ressenti_global}
             onChange={(ressenti_global) =>
-              dispatch({
-                kind: 'updateContexte',
-                patch: { ressenti_global },
-              })
+              dispatch({ kind: 'updateContexte', patch: { ressenti_global } })
             }
           />
           <DifficultyMarker
@@ -182,24 +193,29 @@ function CaptureBody({ chevalId, horseName }: { chevalId: string; horseName: str
         />
       )}
 
-      {capture.retrying ? (
-        <Text variant="caption" color="textMuted" accessibilityLiveRegion="polite">
-          Réseau instable — réessai en cours, ta saisie est gardée…
-        </Text>
-      ) : null}
-      {capture.error ? (
+      {edit.error ? (
         <Text variant="caption" color="danger" accessibilityLiveRegion="polite">
-          {sessionErrorMessage(capture.error)}
+          {sessionErrorMessage(edit.error)}
         </Text>
       ) : null}
 
       <View style={styles.saveBar}>
         <Button
-          label="Enregistrer"
+          label="Enregistrer les modifications"
           loadingLabel="Enregistrement…"
-          loading={capture.saving}
+          loading={edit.saving}
           disabled={!canSave(draft)}
-          onPress={capture.save}
+          onPress={edit.save}
+        />
+      </View>
+
+      <View style={styles.danger}>
+        <Button
+          variant="danger"
+          label="Supprimer cette séance"
+          loadingLabel="Suppression…"
+          loading={edit.removing}
+          onPress={confirmDelete}
         />
       </View>
     </Screen>
@@ -214,9 +230,10 @@ const styles = StyleSheet.create({
   list: {
     gap: spacing.md,
   },
-  empty: {
+  center: {
     flex: 1,
     gap: spacing.lg,
+    justifyContent: 'center',
   },
   confirm: {
     flex: 1,
@@ -227,5 +244,8 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     borderTopWidth: 1,
     borderTopColor: colors.border,
+  },
+  danger: {
+    marginTop: spacing.lg,
   },
 });
