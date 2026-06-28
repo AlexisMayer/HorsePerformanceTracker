@@ -1,5 +1,22 @@
-import { type SéanceCréerDto, type SéanceSortie, séanceCréerSchema } from '@hpt/shared';
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
+import {
+  type SéanceCréerDto,
+  type SéanceModifierDto,
+  type SéanceSortie,
+  séanceCréerSchema,
+  séanceModifierSchema,
+} from '@hpt/shared';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { type AuthenticatedUser, CurrentUser } from '../auth-account/current-user.decorator';
 import { JwtAccessGuard } from '../auth-account/jwt-access.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
@@ -13,10 +30,9 @@ import { SessionsService } from './sessions.service';
  * l'entrée (DTO de `@hpt/shared`), règles métier dans le service, projections
  * sans clé inattendue.
  *
- * **Chemin minimal** volontaire (DoD 2.2) : création + lecture brute suffisantes
- * pour prouver la persistance. L'UX de saisie rapide (presets, sliders, compteurs
- * « tap », duplication, aperçu des taux) est le **lot 2.3** ; le feed riche le
- * **3.1** ; l'édition/suppression le **2.4**.
+ * Création + lecture brute (lot 2.2) ; **édition** (`PATCH /sessions/:id`) et
+ * **suppression** (`DELETE /sessions/:id`) du **lot 2.4** (Spec §3.7). Le feed
+ * riche reste le **3.1**, l'historique complet le **3.4**.
  *
  * Les `:id` malformés sont rejetés en **400** par `ParseUUIDPipe` (avant la
  * base) ; un `:id` valide mais étranger au compte renvoie **404** (service).
@@ -57,5 +73,32 @@ export class SessionsController {
     @Param('id', ParseUUIDPipe) seanceId: string,
   ): Promise<SéanceSortie> {
     return this.sessions.findOne(user.id, seanceId);
+  }
+
+  /**
+   * Édite une séance du compte courant (lot 2.4, Spec §3.7) : remplace son contenu
+   * mutable (type, collection, contexte), **pose `date_modification`** et garde
+   * `date`/`provenance` immuables. 404 si la séance est étrangère au compte.
+   */
+  @Patch('sessions/:id')
+  update(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) seanceId: string,
+    @Body(new ZodValidationPipe(séanceModifierSchema)) dto: SéanceModifierDto,
+  ): Promise<SéanceSortie> {
+    return this.sessions.update(user.id, seanceId, dto);
+  }
+
+  /**
+   * Supprime une séance du compte courant (lot 2.4, Spec §3.7) — purge cascade de
+   * ses unités atomiques (0.3). 204 au succès, 404 si étrangère au compte.
+   */
+  @Delete('sessions/:id')
+  @HttpCode(204)
+  remove(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) seanceId: string,
+  ): Promise<void> {
+    return this.sessions.remove(user.id, seanceId);
   }
 }

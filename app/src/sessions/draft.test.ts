@@ -1,6 +1,7 @@
 import {
   type SéanceSortie,
   séanceCréerSchema,
+  séanceModifierSchema,
   tauxCombinaison,
   tauxObstacleSimple,
 } from '@hpt/shared';
@@ -10,10 +11,13 @@ import {
   clampCounter,
   clampHauteur,
   draftFromPreviousSession,
+  draftFromSession,
   draftReducer,
   draftToCreateDto,
+  draftToModifierDto,
   duplicateObstaclePlus5,
   emptyDraft,
+  formatDateModification,
   formatRate,
   newObstacle,
   newTour,
@@ -315,5 +319,147 @@ describe('draftReducer', () => {
     d = draftReducer(d, { kind: 'updateContexte', patch: { ressenti_global: 4 } });
     d = draftReducer(d, { kind: 'updateContexte', patch: { note: 'top' } });
     expect(d.contexte).toEqual({ ressenti_global: 4, énergie: null, note: 'top' });
+  });
+});
+
+/** Construit une `SéanceSortie` de test (champs techniques minimaux). */
+function makeSortie(overrides: Partial<SéanceSortie> = {}): SéanceSortie {
+  const tech = { id: 'x', created_at: new Date(), updated_at: new Date() };
+  return {
+    ...tech,
+    cheval_id: 'c1',
+    type: 'Parcours',
+    date: new Date('2026-06-01T10:00:00Z'),
+    date_modification: null,
+    provenance: 'live',
+    obstacles: [],
+    tours: [],
+    contexte: null,
+    ...overrides,
+  };
+}
+
+describe('draftFromSession (édition, lot 2.4)', () => {
+  it('reprend la séance à l’identique : type, fautes, difficulté, contexte', () => {
+    const session = makeSortie({
+      type: 'Parcours',
+      obstacles: [
+        {
+          ...{ id: 'o1', created_at: new Date(), updated_at: new Date() },
+          seance_id: 'x',
+          type: 'Oxer',
+          hauteur: 110,
+          répétitions: 4,
+          barres: 2,
+          refus: 1,
+          difficulté: 3,
+          nombre_d_éléments: null,
+          éléments: null,
+        },
+      ],
+      contexte: {
+        ...{ id: 'ctx', created_at: new Date(), updated_at: new Date() },
+        seance_id: 'x',
+        ressenti_global: 4,
+        énergie: 2,
+        note: 'séance dense',
+      },
+    });
+
+    const draft = draftFromSession(session);
+    expect(draft.type).toBe('Parcours');
+    // Fautes et difficulté CONSERVÉES (≠ duplication, qui repart à 0).
+    expect(draft.obstacles[0]).toMatchObject({
+      type: 'Oxer',
+      hauteur: 110,
+      répétitions: 4,
+      barres: 2,
+      refus: 1,
+      difficulté: 3,
+    });
+    expect(draft.contexte).toEqual({ ressenti_global: 4, énergie: 2, note: 'séance dense' });
+  });
+
+  it('reprend la structure de combinaison inline (nombre + détail)', () => {
+    const session = makeSortie({
+      type: 'Gymnastique',
+      obstacles: [
+        {
+          ...{ id: 'o1', created_at: new Date(), updated_at: new Date() },
+          seance_id: 'x',
+          type: 'Combinaison',
+          hauteur: 115,
+          répétitions: 2,
+          barres: 0,
+          refus: 0,
+          difficulté: null,
+          nombre_d_éléments: 2,
+          éléments: ['Vertical', 'Oxer'],
+        },
+      ],
+    });
+    const draft = draftFromSession(session);
+    expect(draft.obstacles[0]).toMatchObject({
+      type: 'Combinaison',
+      nombre_d_éléments: 2,
+      éléments: ['Vertical', 'Oxer'],
+    });
+    // La projection ré-émet la combinaison complète (détail conservé).
+    expect(() => séanceModifierSchema.parse(draftToModifierDto(draft))).not.toThrow();
+  });
+
+  it('reprend les tours d’un concours avec leurs fautes', () => {
+    const session = makeSortie({
+      type: 'Concours',
+      tours: [
+        {
+          ...{ id: 't1', created_at: new Date(), updated_at: new Date() },
+          seance_id: 'x',
+          hauteur: 125,
+          barres: 4,
+          refus: 0,
+        },
+      ],
+    });
+    const draft = draftFromSession(session);
+    expect(draft.tours[0]).toMatchObject({ hauteur: 125, barres: 4, refus: 0 });
+    expect(draft.obstacles).toHaveLength(0);
+  });
+});
+
+describe('draftToModifierDto (projection édition)', () => {
+  it('projette type + collection, jamais idempotency_key ni provenance', () => {
+    const dto = draftToModifierDto({
+      ...emptyDraft('Parcours'),
+      obstacles: [newObstacle({ type: 'Oxer', hauteur: 110, barres: 1 })],
+    });
+    expect(dto.type).toBe('Parcours');
+    expect(dto.obstacles).toHaveLength(1);
+    expect(dto).not.toHaveProperty('idempotency_key');
+    expect(dto).not.toHaveProperty('provenance');
+    // Re-validé par le schéma serveur lui-même (aucun type dupliqué).
+    expect(() => séanceModifierSchema.parse(dto)).not.toThrow();
+  });
+
+  it('concours : tours projetés ; contexte omis si vide', () => {
+    const dto = draftToModifierDto({
+      ...emptyDraft('Concours'),
+      tours: [newTour({ hauteur: 120 })],
+    });
+    expect(dto.tours).toHaveLength(1);
+    expect(dto.obstacles).toBeUndefined();
+    expect(dto.contexte).toBeUndefined();
+    expect(() => séanceModifierSchema.parse(dto)).not.toThrow();
+  });
+});
+
+describe('formatDateModification (honnêteté d’interface, §7)', () => {
+  it('rend un libellé sobre « Modifié le … » pour une date', () => {
+    expect(formatDateModification('2026-06-28T12:00:00Z')).toMatch(/^Modifié le /);
+  });
+
+  it('vide quand jamais éditée (null) ou date invalide', () => {
+    expect(formatDateModification(null)).toBe('');
+    expect(formatDateModification('pas-une-date')).toBe('');
   });
 });

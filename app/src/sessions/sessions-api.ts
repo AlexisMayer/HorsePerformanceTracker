@@ -1,4 +1,4 @@
-import type { SéanceCréerDto, SéanceSortie } from '@hpt/shared';
+import type { SéanceCréerDto, SéanceModifierDto, SéanceSortie } from '@hpt/shared';
 import type { ApiClient } from '../auth/api-client';
 
 /**
@@ -8,9 +8,10 @@ import type { ApiClient } from '../auth/api-client';
  * interceptor 401 de 1.4) ; le serveur scope au compte courant et vérifie la
  * propriété du cheval.
  *
- * Périmètre 2.3 : **création** (saisie rapide) + **lecture** de la dernière
- * séance d'un cheval (pour la duplication, Spec §3.4). On ne consomme **que** ce
- * dont l'UX a besoin — l'édition/suppression est le lot 2.4.
+ * Périmètre : **création** + **lecture** (saisie rapide & duplication, lot 2.3),
+ * puis **édition** / **suppression** d'une séance (lot 2.4, Spec §3.7). La
+ * `date`/`provenance` ne sont pas éditables ; le serveur pose `date_modification`
+ * à l'édition et purge en cascade à la suppression.
  *
  * Note transport : `SéanceSortie` type ses dates en `Date`, mais le JSON les
  * rend en chaînes ISO. L'aperçu des taux se calcule sur les **nombres du
@@ -20,6 +21,9 @@ import type { ApiClient } from '../auth/api-client';
 export interface SessionsApi {
   create(chevalId: string, dto: SéanceCréerDto): Promise<SéanceSortie>;
   listForHorse(chevalId: string): Promise<SéanceSortie[]>;
+  get(seanceId: string): Promise<SéanceSortie>;
+  update(seanceId: string, dto: SéanceModifierDto): Promise<SéanceSortie>;
+  remove(seanceId: string): Promise<void>;
 }
 
 export function createSessionsApi(client: ApiClient): SessionsApi {
@@ -28,5 +32,9 @@ export function createSessionsApi(client: ApiClient): SessionsApi {
       client.request<SéanceSortie>(`/horses/${chevalId}/sessions`, { method: 'POST', body: dto }),
     listForHorse: (chevalId) =>
       client.request<SéanceSortie[]>(`/horses/${chevalId}/sessions`, { method: 'GET' }),
+    get: (seanceId) => client.request<SéanceSortie>(`/sessions/${seanceId}`, { method: 'GET' }),
+    update: (seanceId, dto) =>
+      client.request<SéanceSortie>(`/sessions/${seanceId}`, { method: 'PATCH', body: dto }),
+    remove: (seanceId) => client.request<void>(`/sessions/${seanceId}`, { method: 'DELETE' }),
   };
 }

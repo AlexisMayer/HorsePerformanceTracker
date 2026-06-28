@@ -1,4 +1,12 @@
-import { type SéanceCréerDto, type SéanceSortie, séanceSortieSchema } from '@hpt/shared';
+import {
+  type ContexteCréerDto,
+  type ObstacleCréerDto,
+  type SéanceCréerDto,
+  type SéanceModifierDto,
+  type SéanceSortie,
+  séanceSortieSchema,
+  type TourCréerDto,
+} from '@hpt/shared';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, inArray } from 'drizzle-orm';
 import { type Database, DRIZZLE } from '../db/database.module';
@@ -9,6 +17,20 @@ import { SéanceNotFoundError } from './sessions.errors';
 
 /** Code SQLSTATE d'une violation de contrainte d'unicité (Postgres). */
 const UNIQUE_VIOLATION = '23505';
+
+/** Handle de transaction Drizzle (le `tx` passé au callback de `db.transaction`). */
+type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+/**
+ * Contenu **mutable** d'une séance (ses unités atomiques) — sous-ensemble commun
+ * à la création (`SéanceCréerDto`) et à l'édition (`SéanceModifierDto`). Sert à
+ * factoriser l'écriture des enfants (une seule implémentation, partagée).
+ */
+interface SéanceUnités {
+  obstacles?: ObstacleCréerDto[];
+  tours?: TourCréerDto[];
+  contexte?: ContexteCréerDto;
+}
 
 /** Regroupe une liste plate d'enfants par `seance_id` (montage de l'arbre). */
 function groupBySeance<T extends { seance_id: string }>(items: T[]): Map<string, T[]> {
@@ -73,43 +95,7 @@ export class SessionsService {
           })
           .returning({ id: seance.id });
         const id = row.id;
-
-        if (dto.obstacles && dto.obstacles.length > 0) {
-          await tx.insert(obstacle).values(
-            dto.obstacles.map((o) => ({
-              seance_id: id,
-              type: o.type,
-              hauteur: o.hauteur,
-              répétitions: o.répétitions,
-              barres: o.barres,
-              refus: o.refus,
-              difficulté: o.difficulté ?? null,
-              nombre_d_éléments: o.nombre_d_éléments ?? null,
-              éléments: o.éléments ?? null,
-            })),
-          );
-        }
-
-        if (dto.tours && dto.tours.length > 0) {
-          await tx.insert(tour).values(
-            dto.tours.map((t) => ({
-              seance_id: id,
-              hauteur: t.hauteur,
-              barres: t.barres,
-              refus: t.refus,
-            })),
-          );
-        }
-
-        if (dto.contexte) {
-          await tx.insert(contexte).values({
-            seance_id: id,
-            ressenti_global: dto.contexte.ressenti_global ?? null,
-            énergie: dto.contexte.énergie ?? null,
-            note: dto.contexte.note ?? null,
-          });
-        }
-
+        await this.insertUnits(tx, id, dto);
         return id;
       });
 
@@ -147,6 +133,118 @@ export class SessionsService {
    * un 404 `SéanceNotFoundError`.
    */
   async findOne(compteId: string, seanceId: string): Promise<SéanceSortie> {
+    const row = await this.loadOwned(compteId, seanceId);
+    const [tree] = await this.assembleTrees([row]);
+    return tree;
+  }
+
+  /**
+   * **Édite** une séance **du compte courant** (lot 2.4, Spec §3.7) — le service
+   * `sessions` est le gardien de l'inviolabilité (Modèle §2) : il **pose
+   * `date_modification = now`** (l'édition n'est **jamais silencieuse**) et laisse
+   * **`date` immuable** (jamais réécrite), ainsi que `provenance` et
+   * `idempotency_key`. Les séances `déclaratives` suivent les mêmes règles.
+   *
+   * **Sémantique de remplacement, en une transaction** : la collection
+   * (obstacles **ou** tours) et le contexte sont **remplacés** d'un bloc
+   * (`type ↔ structure` revérifié par le service via la même écriture que la
+   * création). Aucun **dérivé** (taux, hauteur maîtrisée, records — Modèle §9/§10)
+   * n'étant stocké, il n'y a **aucun agrégat à corriger** : le prochain calcul
+   * dérive mécaniquement de l'historique courant.
+   *
+   * L'**idempotence (2.2) ne contourne pas l'édition** : un re-`POST` avec la même
+   * clé renvoie la séance existante **inchangée** ; modifier passe **forcément**
+   * par cette route.
+   */
+  async update(compteId: string, seanceId: string, dto: SéanceModifierDto): Promise<SéanceSortie> {
+    await this.loadOwned(compteId, seanceId);
+
+    await this.db.transaction(async (tx) => {
+      // Remplace les unités atomiques : on purge les enfants existants puis on
+      // réécrit la collection cible (aucun dérivé stocké à réconcilier).
+      await tx.delete(obstacle).where(eq(obstacle.seance_id, seanceId));
+      await tx.delete(tour).where(eq(tour.seance_id, seanceId));
+      await tx.delete(contexte).where(eq(contexte.seance_id, seanceId));
+
+      await tx
+        .update(seance)
+        .set({
+          type: dto.type,
+          // Édition jamais silencieuse : on trace la modification. `date`,
+          // `provenance` et `idempotency_key` restent volontairement intouchés.
+          date_modification: new Date(),
+        })
+        .where(eq(seance.id, seanceId));
+
+      await this.insertUnits(tx, seanceId, dto);
+    });
+
+    return this.loadTreeById(seanceId);
+  }
+
+  /**
+   * **Supprime** une séance **du compte courant** (lot 2.4, Spec §3.7) — **purge
+   * dure en cascade** : la FK `ON DELETE CASCADE` posée en 0.3 (`Séance →
+   * {Obstacle, Tour, Contexte}`) emporte toutes ses unités atomiques. **Pas de
+   * soft delete** (cohérent 1.3). Ses contributions aux métriques/records
+   * disparaissent **par construction** : rien n'est stocké, donc rien à
+   * décrémenter (Modèle §9/§10). 404 si la séance n'appartient pas au compte.
+   */
+  async remove(compteId: string, seanceId: string): Promise<void> {
+    await this.loadOwned(compteId, seanceId);
+    await this.db.delete(seance).where(eq(seance.id, seanceId));
+  }
+
+  /**
+   * Écrit les **unités atomiques** d'une séance (obstacles **ou** tours selon le
+   * type, contexte 0..1) dans la transaction courante. **Une seule
+   * implémentation**, partagée par la création (2.2) et l'édition (2.4).
+   */
+  private async insertUnits(tx: Transaction, seanceId: string, dto: SéanceUnités): Promise<void> {
+    if (dto.obstacles && dto.obstacles.length > 0) {
+      await tx.insert(obstacle).values(
+        dto.obstacles.map((o) => ({
+          seance_id: seanceId,
+          type: o.type,
+          hauteur: o.hauteur,
+          répétitions: o.répétitions,
+          barres: o.barres,
+          refus: o.refus,
+          difficulté: o.difficulté ?? null,
+          nombre_d_éléments: o.nombre_d_éléments ?? null,
+          éléments: o.éléments ?? null,
+        })),
+      );
+    }
+
+    if (dto.tours && dto.tours.length > 0) {
+      await tx.insert(tour).values(
+        dto.tours.map((t) => ({
+          seance_id: seanceId,
+          hauteur: t.hauteur,
+          barres: t.barres,
+          refus: t.refus,
+        })),
+      );
+    }
+
+    if (dto.contexte) {
+      await tx.insert(contexte).values({
+        seance_id: seanceId,
+        ressenti_global: dto.contexte.ressenti_global ?? null,
+        énergie: dto.contexte.énergie ?? null,
+        note: dto.contexte.note ?? null,
+      });
+    }
+  }
+
+  /**
+   * Charge une séance **possédée par le compte** (404 sinon, sans fuite). Lue dans
+   * la table du module, sa **propriété** est vérifiée via `horses` (jamais en
+   * lisant sa table, Architecture §1) ; toute séance étrangère devient un 404
+   * `SéanceNotFoundError`. Base du scoping pour lecture/édition/suppression.
+   */
+  private async loadOwned(compteId: string, seanceId: string): Promise<typeof seance.$inferSelect> {
     const [row] = await this.db.select().from(seance).where(eq(seance.id, seanceId)).limit(1);
     if (!row) throw new SéanceNotFoundError();
     try {
@@ -155,8 +253,7 @@ export class SessionsService {
       if (error instanceof ChevalNotFoundError) throw new SéanceNotFoundError();
       throw error;
     }
-    const [tree] = await this.assembleTrees([row]);
-    return tree;
+    return row;
   }
 
   /** Cherche une séance par sa clé d'idempotence (scopée au cheval), ou `null`. */

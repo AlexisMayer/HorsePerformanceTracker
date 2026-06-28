@@ -21,6 +21,7 @@ import {
   type ObstacleCréerDto,
   type Provenance,
   type SéanceCréerDto,
+  type SéanceModifierDto,
   type SéanceSortie,
   type TourCréerDto,
   type TypeObstacle,
@@ -197,6 +198,67 @@ export function draftFromPreviousSession(prev: SéanceSortie): SessionDraft {
 }
 
 /**
+ * **Pré-remplit un brouillon pour l'ÉDITION** d'une séance existante (lot 2.4,
+ * Spec §3.7). À la différence de `draftFromPreviousSession` (qui amorce une
+ * *nouvelle* séance, fautes remises à 0), on reprend la séance **à l'identique** :
+ * type, collection, **fautes**, marqueurs de difficulté, structure de combinaison
+ * **et** contexte — l'utilisateur corrige ce qu'il veut. La `date`, la
+ * `provenance` et la clé d'idempotence ne sont **pas éditables** : la clé du
+ * brouillon est neuve (inutilisée par le `PATCH`, qui cible la séance par son id).
+ */
+export function draftFromSession(s: SéanceSortie): SessionDraft {
+  const base = emptyDraft(s.type);
+  const contexte: ContexteDraft = {
+    ressenti_global: s.contexte?.ressenti_global ?? null,
+    énergie: s.contexte?.énergie ?? null,
+    note: s.contexte?.note ?? '',
+  };
+  if (estConcours(s.type)) {
+    return {
+      ...base,
+      contexte,
+      tours: s.tours.map((t) =>
+        newTour({
+          hauteur: clampHauteur(t.hauteur),
+          barres: clampCounter(t.barres, 0),
+          refus: clampCounter(t.refus, 0),
+        }),
+      ),
+    };
+  }
+  return {
+    ...base,
+    contexte,
+    obstacles: s.obstacles.map((o) =>
+      newObstacle({
+        type: o.type,
+        hauteur: clampHauteur(o.hauteur),
+        répétitions: clampCounter(o.répétitions, 1),
+        barres: clampCounter(o.barres, 0),
+        refus: clampCounter(o.refus, 0),
+        difficulté: o.difficulté ?? null,
+        nombre_d_éléments: o.nombre_d_éléments ?? MIN_ÉLÉMENTS,
+        éléments: (o.éléments ?? []) as TypeObstacleSimple[],
+      }),
+    ),
+  };
+}
+
+/**
+ * Rend la `date_modification` d'une séance en libellé sobre — **honnêteté
+ * d'interface** (UI/UX §7) : on **assume la modification sans dramatiser**. `null`
+ * (jamais éditée) ⇒ chaîne vide. Tolérant au transport JSON (la date arrive en
+ * chaîne ISO côté app, jamais un objet `Date`).
+ */
+export function formatDateModification(value: Date | string | null): string {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const libellé = d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+  return `Modifié le ${libellé}`;
+}
+
+/**
  * **Aperçu du taux** d'un obstacle, via les fonctions pures de `shared` (Modèle
  * §7) : `(rép − barres − refus)/rép` pour un simple, `(rép × éléments − barres −
  * refus)/(rép × éléments)` pour une combinaison. **Une seule implémentation** —
@@ -281,6 +343,27 @@ export function draftToCreateDto(
     type: draft.type,
     idempotency_key: draft.idempotency_key,
     provenance,
+    ...(contexte ? { contexte } : {}),
+  };
+  if (estConcours(draft.type)) {
+    return { ...common, tours: draft.tours.map(tourToDto) };
+  }
+  return { ...common, obstacles: draft.obstacles.map(obstacleToDto) };
+}
+
+/**
+ * Projette un brouillon vers le **DTO d'édition** de l'API 2.4
+ * (`séanceModifierSchema` de `@hpt/shared` — aucun type dupliqué). Comme la
+ * création, **le type pilote la collection** émise (`Concours` → `tours`, sinon
+ * `obstacles`) et le contexte n'est émis que s'il porte quelque chose (absent ⇒
+ * contexte retiré, remplacement). Ni `idempotency_key` ni `provenance` (immuables)
+ * ne sont projetés ; la `date_modification` est posée par le **serveur**, jamais
+ * par le client (édition jamais silencieuse, Modèle §2).
+ */
+export function draftToModifierDto(draft: SessionDraft): SéanceModifierDto {
+  const contexte = contexteToDto(draft.contexte);
+  const common = {
+    type: draft.type,
     ...(contexte ? { contexte } : {}),
   };
   if (estConcours(draft.type)) {

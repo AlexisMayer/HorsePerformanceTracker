@@ -1458,3 +1458,153 @@ existant).
 | `pnpm test` | Vitest — 50 (shared) + 13 (api) + **63 (app : 21 + 42 sessions)** | ✅ 126/126 |
 | `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** (20 routes, `/capture` incluse, 1090 modules) | ✅ vert |
 | CI | job `ci` (install→lint→typecheck→test→build) — couvre les tests sessions app | ✅ |
+
+---
+
+## Lot 2.4 — Édition / suppression de séance · 2026-06-28
+
+Extension du module **`sessions`** (API + tranche front) : **éditer** une séance
+(jamais silencieusement — `date_modification` posée et visible) et la
+**supprimer** (purge cascade, ses contributions disparaissent). Le service
+`sessions` (2.2) reste le **gardien de l'inviolabilité** : toute écriture passe
+par lui. On réutilise les **composants de saisie de 2.3** en mode édition.
+Strictement le lot 2.4 : ni combinaisons réutilisables (2.5), ni
+métriques/feed/records (3.x), ni historique riche (3.4).
+
+### Emplacement (décisions tranchées)
+
+- **API** : `api/src/sessions/sessions.service.ts` (méthodes `update` + `remove`,
+  helpers privés `loadOwned` + `insertUnits` factorisés) et
+  `sessions.controller.ts` (`PATCH /sessions/:id`, `DELETE /sessions/:id`). **Pas
+  de migration** : on écrit dans le schéma 0.3 (cascades déjà posées) ; aucune
+  colonne ajoutée.
+- **Contrats `shared`** : `packages/shared/src/schemas/seance.ts` — `séanceModifierSchema`
+  + `SéanceModifierDto`, et **extraction** de l'invariant `type ↔ structure`
+  (`vérifieTypeStructure`) désormais **partagé** par création et édition (aucune
+  règle dupliquée).
+- **App** : `app/src/sessions/` — `draft.ts` (`draftFromSession`,
+  `draftToModifierDto`, `formatDateModification`), `sessions-api.ts`
+  (`get`/`update`/`remove`), `use-session-edit.ts` (hook d'orchestration) ;
+  **écran** `app/src/app/sessions/[id]/edit.tsx` (route `/sessions/[id]/edit`).
+
+### Décisions tranchées (et pourquoi)
+
+- **Champs éditables vs immuables (liste exacte).** *Éditables* : `type`, la
+  **collection** (`obstacles` **ou** `tours` selon le type) et le `contexte`
+  (0..1). *Immuables, volontairement absents du DTO d'édition* : **`date`** (jamais
+  réécrite, Modèle §2), **`provenance`**, `cheval_id`, `id`, `idempotency_key`. Le
+  schéma Zod ne porte tout simplement pas ces clés — un client qui les enverrait
+  les voit **strippées** (prouvé par test), jamais une voie détournée pour réécrire
+  `date`/`provenance`. **Le `type` est éditable** (correction légitime : la
+  structure suit — Parcours→Concours remplace obstacles par tours), sous le même
+  invariant `type ↔ structure`.
+- **`date_modification` posée par le service (édition jamais silencieuse).**
+  `update` pose `date_modification = now` à chaque édition et **ne touche pas** à
+  `date`/`provenance`/`idempotency_key`. La valeur n'est **jamais fournie par le
+  client**. Le front la **rend visible** (« Modifié le … », libellé sobre via
+  `formatDateModification` — UI/UX §7 : assumer sans dramatiser), à l'ouverture de
+  l'écran d'édition **et** sur la confirmation post-édition.
+- **Sémantique de remplacement, transactionnelle (cohérente avec 2.2).** L'édition
+  **remplace** le contenu mutable d'un bloc : dans **une** transaction Drizzle, on
+  purge les enfants (`obstacle`/`tour`/`contexte`) puis on réécrit la collection
+  cible via le **même** `insertUnits` que la création (tout ou rien). Choix assumé
+  vs un PATCH champ-à-champ : la collection est une **unité indivisible** (comme à
+  la création), aucune route au niveau obstacle n'existe. `contexte` absent ⇒
+  **retiré** (remplacement complet).
+- **Comportement d'idempotence à l'édition (consigné).** L'idempotence de 2.2
+  dédoublonne la **création** : un re-`POST` avec la même `(cheval_id,
+  idempotency_key)` renvoie la séance **existante inchangée** — il **ne contourne
+  pas** l'édition (prouvé : re-`POST` même clé + corps différent ⇒ séance d'origine,
+  `date_modification` toujours `null`). **Modifier passe forcément par
+  `PATCH /sessions/:id`.** L'`idempotency_key` reste la clé d'identité de la ligne
+  (intouchée), pas un canal de mutation.
+- **Suppression = purge dure en cascade, pas de soft delete.** `remove` vérifie la
+  propriété puis `DELETE` la séance ; les FK `ON DELETE CASCADE` de 0.3 (`Séance →
+  {Obstacle, Tour, Contexte}`) emportent les enfants. Cohérent avec 1.3 (RGPD,
+  aucun soft delete). `204` au succès.
+- **« Retire les contributions » est structurel — rien à recompute.** Les dérivés
+  (taux, hauteur maîtrisée, records/jalons) **ne sont jamais stockés** (Modèle
+  §9/§10) : supprimer (ou éditer) une séance **retire/ajuste mécaniquement** sa
+  contribution au **prochain** calcul, qui dérive toujours de l'historique courant.
+  **Aucun agrégat à décrémenter, aucune ligne d'agrégat à coder.** Prouvé par un
+  test qui calcule un **taux agrégé via `shared`** (`tauxObstacleSimple` sur les
+  efforts/fautes additionnés depuis l'API) **avant/après** suppression : `0.5 → 1`,
+  sans rien de stocké (on recalcule depuis `GET /horses/:id/sessions`).
+- **Autorisation scopée au compte (404 sans fuite).** `update`/`remove` passent par
+  `loadOwned` : lecture de la séance puis vérification de la **propriété du cheval**
+  via `HorsesService` (jamais en lisant sa table — Architecture §1). Une séance
+  d'un autre compte ⇒ **404 `SéanceNotFoundError`** (pas 403 : pas d'oracle
+  d'existence, cohérent 2.1/2.2). `:id` malformé ⇒ **400** (`ParseUUIDPipe`).
+- **Séances `déclaratives` : mêmes règles.** Le schéma/le service ne distinguent
+  pas la provenance (non éditable) — une `déclarative` s'édite et se supprime
+  comme une `live` (prouvé : édition d'une `déclarative` ⇒ `date_modification`
+  posée, `provenance` conservée).
+- **Réutilisation des composants de saisie 2.3.** Le mode édition rejoue **tels
+  quels** `ChipGroup`, `HeightBar`/`TapCounter` (via `ObstacleEditor`/`TourEditor`),
+  `DifficultyMarker` et le **même `draftReducer`**. `draftFromSession` pré-remplit
+  le brouillon **à l'identique** (≠ `draftFromPreviousSession` qui repart à 0
+  faute) : type, **fautes**, difficulté, structure de combinaison **et** contexte
+  conservés. `draftToModifierDto` projette vers `séanceModifierSchema` (re-validé
+  par le schéma serveur dans les tests — aucun type dupliqué).
+- **Point d'entrée front (minimal, consigné).** L'écran d'édition est atteint
+  depuis la **confirmation d'enregistrement** de la saisie (2.3) : « Modifier la
+  séance » → `/sessions/[id]/edit`. C'est le point d'entrée **minimal** voulu ;
+  l'écran porte aussi la **suppression** (bouton dédié + `Alert` de confirmation
+  explicite). L'**onglet Historique** reste le placeholder de 3.4 — l'entrée
+  riche (liste, détail, bilan) y sera branchée là.
+
+### Écarts vs cadrage (consignés)
+
+- **Édition = remplacement de la collection (pas un PATCH partiel champ-à-champ).**
+  Le `PATCH /sessions/:id` attend le **contenu mutable complet** (type +
+  collection + contexte). Plus simple et non ambigu pour une **collection**
+  (fusionner des sous-éléments imposerait des ids d'obstacle/tour adressables,
+  absents de l'API — relèverait d'une granularité non requise ici). Les enfants
+  reçoivent de **nouveaux ids** à l'édition (ils ne sont pas adressables
+  individuellement) — sans incidence sur la séance (id/`date`/`idempotency_key`
+  stables).
+- **Aucune migration, aucun nouveau dérivé.** Conformément au hors-périmètre : on
+  **ne recalcule ni ne stocke** aucun agrégat. Le test de « contribution retirée »
+  réutilise la **fonction pure de `shared` (0.2)** ; aucune surface métrique/feed
+  n'est introduite (3.x).
+- **Tests app = logique pure (Node), pas de rendu RN** (cohérent 1.4/2.3) : la
+  fidélité de `draftFromSession`, la projection `draftToModifierDto` et le câblage
+  HTTP (`get`/`update`/`remove`) sont testés en pur ; l'écran d'édition est prouvé
+  par `tsc` **et** l'**export Metro web** (route `/sessions/[id]/edit` générée).
+
+### Points laissés ouverts (reports explicites)
+
+- **Onglet Historique complet → 3.4** : liste des séances passées, détail, accès au
+  bilan, et l'entrée « riche » vers édition/suppression. Ici, seul le point
+  d'entrée **minimal** (depuis la confirmation de saisie) est posé.
+- **Surfaces métriques / feed / records → 3.x** : elles **consommeront le calcul
+  dérivé** (toujours sur l'historique courant) ; la suppression/édition y est déjà
+  correctement reflétée **par construction** (rien à recoder côté agrégat). La
+  curation « `live` seul » des agrégats reste l'affaire de **3.2** (non filtrée ici).
+- **Combinaisons réutilisables / `combinaison_ref` → 2.5** : l'édition manipule la
+  combinaison **inline** (comme 2.2/2.3), jamais une bibliothèque.
+- **Statut HTTP du rejeu idempotent** : inchangé (201, cf. 2.2) — sans incidence sur
+  l'édition (chemin distinct, `PATCH`/200).
+- **Résilience de l'édition (réessai/brouillon)** : `submitSession` (réessai
+  idempotent) reste réservé à la **création** ; l'édition est une mutation simple
+  (l'interceptor 401 de 1.4 couvre la session tombée). À rouvrir si une UX hors
+  ligne de l'édition devient nécessaire.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Éditer** : modifications persistées, `date_modification` **posée et visible**, `date` d'origine **inchangée** | e2e `sessions-edit.spec.ts` : `PATCH` ⇒ collection remplacée, `date_modification` non nul, `date === date` d'origine (corps **et** DB), `provenance` idem ; front affiche « Modifié le … » | ✅ |
+| **Type éditable** (structure suit) | e2e : Parcours→Concours ⇒ `tours` peuplés, `obstacles = 0` | ✅ |
+| **Idempotence ne contourne pas l'édition** | e2e : re-`POST` même clé + corps différent ⇒ séance d'origine, `date_modification` nul ; seul `PATCH` édite | ✅ |
+| **Séances `déclaratives`** : mêmes règles | e2e : édition d'une `déclarative` ⇒ `date_modification` posée, `provenance` conservée | ✅ |
+| **Supprimer** : séance + enfants **purgés** (aucune ligne résiduelle) | e2e : `DELETE` 204 ⇒ `count(seance/obstacle/contexte) = 0`, relecture 404 | ✅ |
+| **Contribution retirée** via calcul **dérivé** (`shared`), **sans agrégat stocké** | e2e : taux agrégé (`tauxObstacleSimple` sur l'historique) `0.5` → `1` après suppression, recalculé depuis l'API | ✅ |
+| **Autorisation** : éditer/supprimer la séance d'un **autre compte** refusé | e2e : B `PATCH`/`DELETE` ⇒ **404**, rien changé côté A ; sans jeton ⇒ 401 ; `:id` malformé ⇒ 400 | ✅ |
+| **Réutilisation 2.3** : éditeurs/slider/compteurs pré-remplis ; aucun type dupliqué | `draft.test.ts` : `draftFromSession` (fautes/difficulté/contexte/combinaison conservés), `draftToModifierDto` re-validé par `séanceModifierSchema` ; écran réutilise `ObstacleEditor`/`TourEditor`/`ChipGroup`/`DifficultyMarker` | ✅ |
+| `pnpm lint` | `biome check .` | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — 54 (shared, +4 modifier) + 13 (api) + **73 (app : +7 draft, +3 api)** | ✅ 140/140 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** (21 routes, `/sessions/[id]/edit` incluse) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — e2e `sessions-edit.spec.ts` (édition/suppression/contribution/autorisation) ajouté au job `db` | ✅ posé (CI) |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 2.4 inclus) | ✅ |
