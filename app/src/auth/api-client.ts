@@ -104,7 +104,7 @@ export function createApiClient({
       headers.set('Content-Type', 'application/json');
     }
     if (init.auth !== false) {
-      const access = tokens.getAccessToken();
+      const access = await tokens.getAccessToken();
       if (access) headers.set('Authorization', `Bearer ${access}`);
     }
     return fetchFn(`${baseUrl}${path}`, {
