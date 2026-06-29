@@ -7,6 +7,7 @@ import { HealthModule } from './health/health.module';
 import { HorsesModule } from './horses/horses.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { SessionsModule } from './sessions/sessions.module';
+import { SharingModule } from './sharing/sharing.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { SessionsModule } from './sessions/sessions.module';
     SessionsModule,
     FeedModule,
     MetricsModule,
+    SharingModule,
   ],
 })
 export class AppModule {}

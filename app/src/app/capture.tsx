@@ -12,6 +12,7 @@ import {
   TourEditor,
   useSessionCapture,
 } from '../sessions';
+import { ShareProposal } from '../sharing';
 import { colors, spacing } from '../theme';
 import { BackHeader, Button, Card, EmptyState, Screen, Text, TextField } from '../ui';
 
@@ -56,20 +57,29 @@ function CaptureBody({ chevalId, horseName }: { chevalId: string; horseName: str
   if (capture.saved) {
     const savedId = capture.savedSession?.id;
     return (
-      <Screen contentStyle={styles.confirm}>
+      <Screen scroll contentStyle={styles.confirm}>
+        {/* Confirmation 2.3 conservée — on y greffe la proposition de carte (§6.6). */}
         <EmptyState
           icon="checkmark-circle-outline"
           title="Enregistré"
           message={`La séance de ${horseName} est enregistrée.`}
         />
         {savedId ? (
-          <Button
-            label="Modifier la séance"
-            variant="secondary"
-            onPress={() => router.replace(`/sessions/${savedId}/edit`)}
-          />
-        ) : null}
-        <Button label="Terminé" onPress={() => router.back()} />
+          <>
+            <ShareProposal
+              seanceId={savedId}
+              nomCheval={horseName}
+              onDismiss={() => router.back()}
+            />
+            <Button
+              label="Modifier la séance"
+              variant="ghost"
+              onPress={() => router.replace(`/sessions/${savedId}/edit`)}
+            />
+          </>
+        ) : (
+          <Button label="Terminé" onPress={() => router.back()} />
+        )}
       </Screen>
     );
   }
@@ -219,9 +229,8 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
   },
   confirm: {
-    flex: 1,
     gap: spacing.lg,
-    justifyContent: 'center',
+    paddingBottom: spacing.xxl,
   },
   saveBar: {
     paddingTop: spacing.sm,
