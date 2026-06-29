@@ -107,11 +107,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Amorçage : lire le refresh persistant et, s'il existe, activer `me`.
   useEffect(() => {
     let cancelled = false;
-    tokenStore.getRefreshToken().then((refreshToken) => {
-      if (cancelled) return;
-      if (refreshToken) setSessionEnabled(true);
-      else setBootResolved(true);
-    });
+    tokenStore
+      .getRefreshToken()
+      .then((refreshToken) => {
+        if (cancelled) return;
+        if (refreshToken) setSessionEnabled(true);
+        else setBootResolved(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setBootResolved(true);
+      });
     return () => {
       cancelled = true;
     };
