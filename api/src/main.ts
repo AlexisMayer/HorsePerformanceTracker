@@ -7,13 +7,7 @@ async function bootstrap(): Promise<void> {
 
   // Enable CORS for development and mobile app (MUST be first middleware)
   app.enableCors({
-    origin: [
-      'http://localhost:3000',
-      'http://localhost:19000',
-      'http://localhost:19001',
-      'http://127.0.0.1:19000',
-      'http://127.0.0.1:19001',
-    ],
+    origin: true, // Accept all origins in development
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
