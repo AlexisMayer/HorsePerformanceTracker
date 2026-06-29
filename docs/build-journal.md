@@ -1813,3 +1813,172 @@ ni plafond de bibliothèque (4.1).
 | `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** (22 routes, `/combinations` incluse) | ✅ vert |
 | `db:verify` (Postgres requis) | Vitest — 73 (lots 0.3→2.4) + **16 (combinations 2.5)** | ✅ 89/89 |
 | CI | job `ci` (sans DB) + job `db` (`migrate` 0→0004 + `verify`, e2e 2.5 inclus) | ✅ |
+
+## Lot 3.1 — Feed mono-cheval · 2026-06-29
+
+Premier morceau de la **Phase 3 (Restitution)**. Module **`feed`** (api) +
+tranche **`app`** (onglet Feed) : composer le **fil d'un cheval** — chaque séance
+devient une **entrée** (faits objectifs en avant, contexte qualitatif en
+légende), avec **injection de jalons** (un record génère un jalon) et **entrées
+de régularité** pour le Plat. Cœur de la rétention : vu à chaque ouverture,
+fonctionnel **dès la séance n°1** (Spec §5.1). `feed` est une surface de
+**lecture/composition** : il lit via le service `sessions` (jamais ses tables,
+Archi §1/§3) et n'écrit **aucune** entité. Strictement le lot 3.1 : **pas** de
+graphes héros (3.2), **pas** de cartes partageables (3.3), **pas** d'historique
+(3.4), **pas** d'onboarding (3.5), **pas** de gating (le feed est gratuit).
+
+### Emplacement (décisions tranchées)
+
+- **`shared` (calc + DTO)** — le calcul vit ici, **une seule** implémentation
+  (Archi §2) : `enums/jalon.ts` (`TYPES_JALON = record | première_fois`),
+  `calc/franchissement.ts` (§10, franchissements propres par unité),
+  `calc/faits-seance.ts` (§7/§9, agrégat objectif d'une séance),
+  `calc/jalons.ts` (`détecteJalons` sur l'historique), `schemas/feed.ts` (DTO du
+  fil : entrées séance/régularité/jalon en **union discriminée**, page + curseur,
+  query de pagination). `referentiel.ts` gagne `typeJalonSchema`.
+- **`api/src/feed/`** — `feed.service.ts` (compose via `SessionsService`),
+  `feed.controller.ts` (`GET /horses/:id/feed`, garde JWT, query Zod),
+  `feed.module.ts`. **Aucune** table, **aucune** écriture, **aucune** erreur de
+  domaine propre (la propriété/404 vient de `sessions`/`horses`).
+  `SessionsModule` **exporte désormais `SessionsService`** (extension non
+  destructive de 2.2, comme `horses`/`combinations` l'ont fait).
+- **`app/src/feed/`** — `feed-api.ts`, `use-feed.ts` (`useInfiniteQuery`,
+  pagination), `labels.ts` (helpers **purs** testés), cartes `feed-entry-card`
+  (séance), `regularity-entry` (Plat), `milestone-card` + `bar-motif` (jalon
+  laiton). L'écran `app/(tabs)/index.tsx` passe du placeholder au **vrai fil**.
+
+### Décisions tranchées (et pourquoi)
+
+- **Où vit la détection record/jalon : dans `shared`, dès 3.1 — et pourquoi.**
+  *Réconciliation roadmap ↔ architecture.* La roadmap ordonne 3.1 avant 3.2
+  (`metrics`), mais le feed a besoin de **détecter les records** pour injecter ses
+  jalons. Conformément à Archi §2 (dérivés = **une seule** implémentation), on
+  **pose les fonctions pures ici** (`calc/jalons.ts`, `calc/franchissement.ts`) ;
+  le module `metrics` (3.2) les **réutilisera** pour la vitrine à records **et**
+  la hauteur maîtrisée (§10), sans double implémentation. **Aucun calcul dans le
+  module `feed`** : il **orchestre** `shared`, rien de plus.
+- **Modèle d'entrée de feed = union discriminée à 3 `kind`.** `séance` (faits
+  objectifs + contexte légende), `régularité` (Plat / 0 franchissement : **pas**
+  de faits), `jalon` (célébration injectée). Choix d'une **union explicite**
+  plutôt qu'un `faits: null` ambigu : l'app rend trois cartes distinctes (UI/UX
+  §4) sans deviner. La frontière `kind` est stable ; 3.2 ajoutera ses surfaces
+  **au-dessus** du fil, pas dedans.
+- **Deux couches étanches respectées (Modèle §1).** `faitsSéance` (§7/§9)
+  n'agrège **que** la couche objective (hauteur max, efforts propres/total, taux,
+  sans-faute) ; le **contexte** (ressenti, note, énergie, difficulté) n'est
+  **jamais agrégé** — il traverse tel quel en **légende** (`contexteSortieSchema`
+  réutilisé). Unification entraînement/concours par la notion d'**effort** (tour
+  = 1 effort) : le taux d'un concours = tours sans-faute / tours (§9), celui d'un
+  entraînement = §7 ; le libellé (« propre » / « sans-faute ») est choisi **côté
+  UI** selon le type, pas porté par les faits.
+- **Règle d'injection des jalons.** `détecteJalons` traite l'historique **trié
+  par date croissante** en maintenant (a) l'ensemble des hauteurs déjà franchies
+  proprement et (b) le **record courant**. Par séance : **un** `record` si son
+  sommet propre dépasse **strictement** l'historique antérieur ; une
+  `première_fois` pour **chaque autre** hauteur jamais franchie proprement (hors
+  la hauteur de record, déjà célébrée). Le jalon est **attaché** à sa séance
+  (`seance_id`) ; l'api le regroupe et l'**injecte après** l'entrée de séance
+  (ordre du mock §6.2). **Franchissement propre (§10)** conservateur : obstacle
+  simple = `rép − barres − refus` ; combinaison = `rép` **seulement si la ligne
+  entière est sans faute** (pas d'attribution par élément) ; tour = 1 si
+  sans-faute.
+- **Provenance : `déclaratif` dans le fil, hors dérivés (Modèle §2).** Une séance
+  `déclaratif` **apparaît** comme entrée (marquée « Antérieure à l'app » côté UI)
+  mais **ne génère ni record ni jalon** : `détecteJalons` **filtre `live`** en
+  amont. Prouvé en unitaire **et** e2e (un `déclaratif` propre à 130 n'éclipse pas
+  le record `live` à 110, et ne porte aucun jalon).
+- **Pagination simple = curseur sur la date.** `GET …/feed?limit=&before=` :
+  `before` (ISO) borne les séances **strictement plus anciennes**, `limit`
+  plafonne les **séances** de la page (les jalons injectés ne comptent pas dans la
+  limite). La réponse porte `next_before` (curseur ISO, `null` en fin) + `has_more`.
+  Les **jalons sont dérivés de l'historique `live` complet** : la pagination ne
+  tranche que **l'affichage**, jamais le calcul (un record reste correct quelle
+  que soit la page).
+- **Alignement de type prouvé, zéro forme dupliquée (Archi §2).** `FaitsSéance`
+  (calc) et `FaitsSéanceDto` (Zod) sont garantis **identiques** par un
+  `expectTypeOf().toEqualTypeOf()` ; le reste du DTO du fil est **inféré** de Zod
+  (`@hpt/shared`) et consommé tel quel par app + api. La projection sortante passe
+  `filSchema.parse` (strip + validation au bord, Archi §5).
+
+### Écarts vs cadrage (consignés)
+
+- **`faitsSéance` (agrégat de séance) posé dans `shared` — au-delà de la stricte
+  « détection record/jalon ».** Justifié par « **aucun calcul dans le module
+  `feed`** » (la composition d'une entrée a besoin des faits objectifs) et par la
+  **réutilisation** à venir (la carte de bilan simple 3.3 résume une séance).
+  C'est un dérivé §7/§9, légitimement dans la couche calc (Archi §2) — testé,
+  borné, sans état.
+- **Carte de jalon : laiton + motif barre, sans emoji `🎉`.** La Spec §5.1
+  *illustre* le jalon avec « 🎉 Nouveau record », mais UI/UX §3.3 pose une **règle**
+  (« jamais d'emoji système **sauf dans le ressenti du feed** ») et UI/UX §2/§3
+  font de la **célébration** un **laiton + signature barre**. La règle prime sur
+  l'exemple : la carte célèbre par le **laiton** (réservé, donc précieux) et un
+  **motif barre** (`bar-motif.tsx`), pas un emoji. Le ressenti, lui, garde ses
+  emojis (seule entorse autorisée).
+- **Correctif hors-périmètre pour débloquer la CI (`auth-context.tsx`).** Des
+  commits de mise au point **postérieurs à 2.5** (support web, non journalisés)
+  avaient introduit `SecureStore.isAvailable` — **inexistant** dans
+  `expo-secure-store@56.0.4` (il expose `isAvailableAsync` /
+  `canUseBiometricAuthentication`) → `pnpm typecheck` **rouge** sur la branche,
+  **avant** tout code 3.1. Corrigé au **minimum** et **conformément à l'intention
+  affichée** du commit (« sur web, fallback mémoire ») : `Platform.OS === 'web' ?
+  undefined : SecureStore`. Aucune autre logique d'auth touchée. Signalé ici car
+  hors lot, mais nécessaire à la DoD (« CI verte »).
+- **Entrées de feed en lecture seule (pas de navigation vers le détail/édition).**
+  Le fil **affiche** ; l'entrée riche vers détail/bilan/édition est l'**onglet
+  Historique (3.4)**. On évite d'empiéter — l'écran d'édition (2.4) reste atteint
+  depuis la confirmation de saisie.
+- **`SessionsService` exporté** et **`formatRate` exposé** par le barrel
+  `sessions` de l'app : extensions **non destructives** (réutilisation, jamais de
+  duplication).
+
+### Points laissés ouverts (reports explicites)
+
+- **Vitrine à records + courbe de hauteur maîtrisée → 3.2** : elles vivront
+  **au-dessus** de ce fil (même onglet, cf. `ListHeaderComponent` réservé) et
+  **réutiliseront le calc `shared`** posé ici — `détecteJalons` pour la vitrine,
+  `franchissementsObstacle/Tour` pour la **hauteur maîtrisée** (§10 : ≥ 3
+  franchissements propres sur ≥ 2 séances ; la brique est prête, l'agrégation
+  reste 3.2). Le **record absolu « gravé »** (§5.5, qui ne redescend jamais même en
+  régression) est une décision d'affichage de la **vitrine 3.2** ; ici on **dérive
+  de l'historique courant**.
+- **Recomposition du fil après suppression (2.4)** : par construction. Rien n'est
+  stocké (Modèle §9/§10) ; le feed **recompose** à chaque lecture depuis
+  l'historique courant — une suppression retire mécaniquement la séance **et**
+  redérive ses jalons (prouvé en unitaire : retirer la séance du record le
+  redérive sur l'avant-dernière).
+- **Séries propres (« clean streaks ») → enrichissement ultérieur.** La vitrine
+  §5.2 mentionne « séries propres » comme troisième famille de jalon ; on n'a posé
+  que **record** et **première_fois** (les deux du périmètre). `TYPES_JALON` est
+  extensible sans casse.
+- **Pagination — affinements.** (a) Curseur par **date** : une collision à la
+  **milliseconde** près (deux séances au même instant) pourrait, au bord d'une
+  page, sauter une entrée — improbable (horodatage de création mono-utilisateur),
+  noté. (b) **Recalcul de l'historique complet à chaque page** : correct et simple
+  à l'échelle v1 ; un calcul **incrémental/caché** sera utile si un cheval
+  accumule des centaines de séances.
+- **Énergie du contexte** (point ouvert hérité de 0.2) : rendue en légende quand
+  présente (échelle 1-5), **jamais agrégée** (§1). Sémantique confirmée par l'usage.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Chaque séance** apparaît comme une entrée : faits objectifs en avant, contexte en légende | e2e `feed.spec.ts` : `GET …/feed` → entrée `séance` (`hauteur_max`, `efforts_propres/totaux`, `taux_réussite`, `sans_faute`) + `contexte` en légende | ✅ |
+| **Un record génère un jalon** injecté ; une séance **`déclaratif` n'en génère pas** | e2e : séance `live` propre@110 ⇒ jalon `record@110` adjacent ; séance `déclaratif`@130 **apparaît** (marquée) mais **0 jalon** ; unitaire `jalons.test.ts` idem | ✅ |
+| Une séance de **Plat** (0 obstacle) = **entrée de régularité** (sans hauteur/fautes) | e2e : entrée `régularité` (kind dédié, **pas** de `faits`) ; `faitsSéance([],[])` ⇒ `null` | ✅ |
+| **Détection record/jalon testée dans `shared`** (une seule implémentation, partagée 3.2) | `jalons.test.ts` (11), `franchissement.test.ts` (7), `faits-seance.test.ts` (6, dont alignement `expectTypeOf`) | ✅ |
+| **État vide = invitation** ; **fonctionne dès la séance n°1** | écran : `EmptyState` « Logue ta première séance pour voir {cheval} progresser » ; e2e : fil vide `entrées: []` ; séance n°1 ⇒ entrée + jalon | ✅ |
+| **Composition via le service `sessions`** (jamais ses tables, Archi §1/§3) | `feed.service` consomme `SessionsService.listForHorse` ; `SessionsModule` exporte le service ; `feed` n'a ni table ni écriture | ✅ |
+| **Pagination simple** (curseur `before` + `limit`) | e2e : `?limit=2` ⇒ 2 plus récentes + `has_more` + `next_before` ; `?before=curseur` ⇒ page suivante, fin de fil | ✅ |
+| **Autorisation** : fil d'un cheval d'un **autre compte** refusé ; non authentifié | e2e : B `GET …/feed` sur le cheval de A → **404** ; sans jeton → **401** | ✅ |
+| Accessibilité terrain (UI/UX §8) | chiffres **tabulaires** (`StatText`) ; libellés accessibles explicites par carte ; contraste AA+ (tokens) ; laiton **réservé** à la célébration | ✅ |
+| Aucun type d'API dupliqué | DTO/calc de `@hpt/shared` (`Fil`, `EntréeFeed`, `FaitsSéanceDto`, `détecteJalons`, `faitsSéance`) ; `FaitsSéance` ≡ `FaitsSéanceDto` (`expectTypeOf`) | ✅ |
+| `pnpm lint` | `biome check .` (216 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **94 (shared, +24)** + 14 (api) + **92 (app : +7 labels)** | ✅ 200/200 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 89 (lots 0.3→2.5) + **5 (feed 3.1)** | ✅ 94/94 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 3.1 inclus) | ✅ |
+
+---

@@ -15,6 +15,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { Platform } from 'react-native';
 import { API_BASE_URL } from '../config';
 import { type ApiClient, createApiClient } from './api-client';
 import { type AuthApi, createAuthApi } from './auth-api';
@@ -71,8 +72,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Services créés une seule fois (le store garde l'access en mémoire).
   const servicesRef = useRef<Services | null>(null);
   if (servicesRef.current === null) {
-    // Sur web, SecureStore n'existe pas → passer undefined pour utiliser le fallback mémoire
-    const backend = typeof SecureStore.isAvailable === 'function' ? SecureStore : undefined;
+    // Sur web, SecureStore n'est pas disponible → fallback mémoire (undefined).
+    const backend = Platform.OS === 'web' ? undefined : SecureStore;
     const tokenStore = createTokenStore(backend);
     const client = createApiClient({
       baseUrl: API_BASE_URL,

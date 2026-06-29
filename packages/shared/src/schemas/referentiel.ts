@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { NIVEAUX_CHEVAL } from '../enums/cheval';
 import { TIERS, TYPES_COMPTE } from '../enums/compte';
 import { estHauteurValide, HAUTEUR_MAX_CM, HAUTEUR_MIN_CM } from '../enums/hauteurs';
+import { TYPES_JALON } from '../enums/jalon';
 import { TYPES_OBSTACLE, TYPES_OBSTACLE_SIMPLE } from '../enums/obstacle';
 import { PROVENANCES, TYPES_SEANCE } from '../enums/seance';
 
@@ -17,6 +18,7 @@ export const typeObstacleSchema = z.enum(TYPES_OBSTACLE);
 export const typeObstacleSimpleSchema = z.enum(TYPES_OBSTACLE_SIMPLE);
 export const typeSéanceSchema = z.enum(TYPES_SEANCE);
 export const provenanceSchema = z.enum(PROVENANCES);
+export const typeJalonSchema = z.enum(TYPES_JALON);
 
 /** Hauteur valide : entière, sur un cran du slider (60→160 cm, pas de 5). */
 export const hauteurSchema = z

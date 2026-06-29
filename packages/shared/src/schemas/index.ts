@@ -5,6 +5,7 @@ export * from './cheval';
 export * from './combinaison';
 export * from './compte';
 export * from './contexte';
+export * from './feed';
 export * from './obstacle';
 export * from './referentiel';
 export * from './seance';
