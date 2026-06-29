@@ -138,34 +138,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useMutation<void, Error, LoginDto>({
     mutationFn: async (dto) => {
-      console.log('[Auth] signIn start', dto);
-      try {
-        const tokens = await authApi.login(dto);
-        console.log('[Auth] signIn success, tokens:', tokens);
-        tokenStore.setAccessToken(tokens.access_token);
-        await tokenStore.setRefreshToken(tokens.refresh_token);
-      } catch (error) {
-        console.error('[Auth] signIn error:', error);
-        throw error;
-      }
+      const tokens = await authApi.login(dto);
+      tokenStore.setAccessToken(tokens.access_token);
+      await tokenStore.setRefreshToken(tokens.refresh_token);
     },
     onSuccess: enableSession,
   });
 
   const signUp = useMutation<void, Error, RegisterDto>({
     mutationFn: async (input) => {
-      console.log('[Auth] signUp start', input);
-      try {
-        await authApi.register(input);
-        console.log('[Auth] signUp register success, now logging in');
-        const tokens = await authApi.login({ email: input.email, password: input.password });
-        console.log('[Auth] signUp login success, tokens:', tokens);
-        tokenStore.setAccessToken(tokens.access_token);
-        await tokenStore.setRefreshToken(tokens.refresh_token);
-      } catch (error) {
-        console.error('[Auth] signUp error:', error);
-        throw error;
-      }
+      await authApi.register(input);
+      const tokens = await authApi.login({ email: input.email, password: input.password });
+      tokenStore.setAccessToken(tokens.access_token);
+      await tokenStore.setRefreshToken(tokens.refresh_token);
     },
     onSuccess: enableSession,
   });
