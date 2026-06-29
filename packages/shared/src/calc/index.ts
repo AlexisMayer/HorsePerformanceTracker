@@ -1,3 +1,4 @@
+export * from './carte';
 export * from './faits-seance';
 export * from './franchissement';
 export * from './hauteur-maitrisee';

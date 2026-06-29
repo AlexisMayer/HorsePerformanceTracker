@@ -10,4 +10,5 @@ export * from './metrics';
 export * from './obstacle';
 export * from './referentiel';
 export * from './seance';
+export * from './sharing';
 export * from './tour';

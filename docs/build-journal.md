@@ -2145,3 +2145,170 @@ diagnostic (heatmap/benchmark 5.x = **premium**, hors set héros), **pas** de ga
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 3.2 inclus) | ✅ |
 
 ---
+
+## Lot 3.3 — Cartes partageables · 2026-06-29
+
+Troisième morceau de la **Phase 3 (Restitution)**. Module **`sharing`** (api) +
+tranche **`app`** : la **carte de bilan de séance simple** (Spec §5.4, UI/UX §6.6)
+**proposée à l'enregistrement** par-dessus la confirmation « Enregistré » de 2.3,
+avec le **record mis en avant** (laiton) s'il y en a un, et l'**export image**
+(rendu de la carte + feuille de partage native). Disponible pour **tous les
+comptes** (gratuit inclus). `sharing` est une surface de **lecture/composition**
+: il lit la séance via le service `sessions` (jamais ses tables, Archi §1/§3) et
+**réutilise** les fonctions pures de `shared` — le récap `résuméCarte` (réutilise
+`faitsSéance` §7/§9 posé en 3.1) et la détection record/jalon (`détecteJalons` de
+3.1, déjà réutilisée par la vitrine `metrics` 3.2). Strictement le lot 3.3 :
+**pas** d'historique (3.4), **pas** de **bilan augmenté IA** (4.5), **pas** de
+**bilan de progression PDF** (4.4) — **trois objets distincts** (Spec §8).
+
+### Emplacement (décisions tranchées)
+
+- **`shared` (calc + DTO)** — le calcul vit ici, **une seule** implémentation
+  (Archi §2) : `calc/carte.ts` (`résuméCarte` — types travaillés distincts/ordre
+  référentiel, hauteurs distinctes triées, et `faits` via `faitsSéance` **réutilisé**,
+  jamais réimplémenté) ; `schemas/sharing.ts` (DTO `CarteBilan` = identité + récap
+  + `record`). Le `faits` du DTO **réutilise** `faitsSéanceSchema` de 3.1 ; le
+  `record` est un `number | null` (la hauteur du record battu par cette séance).
+- **`api/src/sharing/`** — `sharing.service.ts` (compose via `SessionsService`),
+  `sharing.controller.ts` (`GET /sessions/:id/card`, garde JWT, `:id` en
+  `ParseUUIDPipe`), `sharing.module.ts`. **Aucune** table, **aucune** écriture,
+  **aucune** erreur de domaine propre (la propriété/404 vient de `sessions`/
+  `horses`). Importe `SessionsModule` (déjà exporté en 3.1) — même posture que
+  `feed`/`metrics`.
+- **`app/src/sharing/`** — `sharing-api.ts`, `card-format.ts` (helpers **purs**
+  testés), `share-card.ts` (orchestration **pure** du partage), `card-share-port.ts`
+  (port injectable), `native-card-share-port.ts` (adaptateur natif : view-shot +
+  expo-sharing + `Share` RN), `bilan-card.tsx` (la carte, `forwardRef` pour la
+  capture), `use-share-card.ts` (hook), `share-proposal.tsx` (l'aperçu +
+  `[ Partager ] / [ Plus tard ]`). L'écran `app/src/app/capture.tsx` **greffe** la
+  proposition sur sa confirmation « Enregistré ».
+
+### Décisions tranchées (et pourquoi)
+
+- **Où sont composées les données de carte : service `sharing`, réutilisant
+  `shared` (et les dérivés que `metrics` possède).** Le service **orchestre** —
+  zéro calcul local (Archi §2). Il lit la **séance** ciblée
+  (`SessionsService.findOne` → 404 sans fuite si étrangère) pour le récap
+  (`résuméCarte`), puis l'**historique** du cheval (`SessionsService.listForHorse`)
+  pour le record (`détecteJalons`). **Pourquoi `détecteJalons` directement et pas
+  `MetricsService`** : Archi §3 liste `sharing → metrics, sessions`, mais — comme
+  `feed` (3.1), lui aussi listé « dépend de metrics » et qui n'injecte pourtant que
+  `SessionsService` — cette dépendance se satisfait en **réutilisant les dérivés
+  `shared` que `metrics` possède** (`détecteJalons`/`recordAbsolu`), pas en câblant
+  le service. De plus `MetricsService.compose` ne donne que le **record absolu** du
+  cheval : insuffisant pour répondre « **cette** séance a-t-elle battu un record ? ».
+  `détecteJalons` rattache le jalon `record` à la **séance** qui l'a posé → on lit
+  exactement le record **de la carte**. Une seule source de vérité (la carte, le
+  feed et la vitrine ne peuvent pas diverger).
+- **Point de greffe : par-dessus la confirmation 2.3, sans la remplacer.** L'écran
+  `/capture` montrait déjà « Enregistré » + « Modifier la séance » + « Terminé »
+  (2.3). On **conserve** le titre/message « Enregistré » et on **insère** la
+  `ShareProposal` (aperçu de la carte + `[ Partager ] / [ Plus tard ]`) ; « Terminé »
+  devient `[ Plus tard ]` (même geste : `router.back()`), « Modifier la séance »
+  reste en lien discret. L'écran de confirmation passe en `scroll` (la carte peut
+  être haute). **« enregistrer → célébrer »** (UI/UX §7) sans rien imposer.
+- **Technique de rendu image + partage natif : port injectable.** Le partage est
+  une **orchestration pure** (`partagerCarte`) derrière un **port** étroit
+  (`CartePartagePort` : `capturer` + `partager`), exactement comme le store de
+  brouillon injectable de 2.3 — donc **testée en Node** (faux port), sans rendu RN
+  ni module natif. L'adaptateur **natif** (le seul fichier touchant le natif, **non**
+  importé par un test, couvert par `tsc`) capture la `BilanCard` (`forwardRef` +
+  `collapsable={false}`) en **PNG** via `react-native-view-shot` (`captureRef`,
+  `result: 'tmpfile'`) puis ouvre la **feuille de partage native** via
+  `expo-sharing` (`shareAsync`, fichier image cross-plateforme), avec **repli** sur
+  `Share` (RN core) en texte si la capture est indisponible. **Jamais de crash** :
+  capture en échec ⇒ partage texte ; fermeture de la feuille (`dismissedAction`) ⇒
+  résultat « annulé », pas une exception.
+- **Mise en avant du record vs carte récap simple : une seule carte, deux états.**
+  Pas d'abstraction prématurée (deux composants). `BilanCard` rend **toujours** le
+  récap (signature barre + grand chiffre + types/hauteurs + taux) ; **si**
+  `carte.record !== null`, elle ajoute une **plaque laiton « Nouveau record »** et
+  passe sa bordure/sa barre en laiton — c'est « la carte de record » (§6.6). Sans
+  record, **aucune** célébration (laiton **réservé**, §2/§3.1) : récap sobre, pas de
+  fausse fête. Un **Plat** (faits `null`) ⇒ carte de **régularité** (sans hauteur ni
+  taux). **Pas d'emoji** (§3.3) : la fête se lit au laiton + motif barre (cohérent
+  3.1/3.2), y compris dans le message texte de repli.
+- **Signature de la carte = barre + nom du cheval + logo HPT discret (UI/UX §2/§6.6).**
+  Le **nom du cheval** et le **logo HPT** sont une **signature d'affichage** ajoutée
+  par l'app (elle tient déjà le cheval courant), **pas un dérivé** : ils ne transitent
+  **pas** par le DTO `CarteBilan` (qui ne porte que des dérivés de séance). Ça garde
+  `sharing` (api) sur ses dépendances `sessions`+`shared` (pas de lecture `horses`)
+  et le DTO minimal.
+- **Carte simple = gratuite, jamais verrouillée (§8).** La route ne porte **que** la
+  garde JWT (aucune garde d'entitlement) ; l'UI ne grise rien. Le **bilan augmenté
+  IA** (4.5, badge ✦) et le **bilan de progression** (4.4, PDF/multi-séances) sont
+  **hors périmètre** — aucun n'est amorcé ici (Spec §8 : trois objets distincts).
+- **Aucune forme dupliquée, alignement prouvé (Archi §2).** Le DTO vient de
+  `@hpt/shared` ; `RésuméCarte` (calc) ≡ le récap du DTO
+  (`Pick<CarteBilan, 'types_travaillés' | 'hauteurs' | 'faits'>`) garanti par
+  `expectTypeOf().toEqualTypeOf()`. La projection sortante passe `carteBilanSchema.parse`
+  (strip + validation au bord, Archi §5).
+
+### Écarts vs cadrage (consignés)
+
+- **Deux dépendances natives ajoutées (`react-native-view-shot@4`, `expo-sharing@~56`).**
+  Le « rendu image » d'un composant RN **n'a pas** d'équivalent JS pur (contrairement
+  au slider de 2.3, remplacé par des pas ±5) : la capture exige view-shot, le partage
+  d'un **fichier image** cross-plateforme exige expo-sharing (le `Share` de RN core ne
+  partage proprement qu'un texte/URL sur Android). On les **isole derrière le port**
+  (logique testée sans elles) et on **épingle** le lockfile (CI `--frozen-lockfile`
+  vert). Aucun build natif en CI (jobs `tsc`/`vitest`) ⇒ risque cantonné à la
+  résolution + aux types (vérifiés). Décision **assumée et journalisée**.
+- **Route `GET /sessions/:id/card`** (et non `/horses/:id/...`) : la carte est
+  relative à **une séance**, pas au cheval — cohérent avec `GET /sessions/:id`
+  (2.2/2.4). Suffixe **anglais** (`card`) comme `feed`/`metrics`, type **français**
+  (`CarteBilan`) comme `Fil`/`Métriques`.
+- **Record « de la séance » robuste pour n'importe quelle séance.** À
+  l'enregistrement (la séance est la dernière), « a battu un record » ⇔ « est le
+  record absolu ». L'endpoint reste correct **même pour une séance ancienne**
+  rejouée : `détecteJalons` rattache le record à la séance qui a **le premier**
+  franchi cette hauteur (records strictement croissants). Honnête (le record reste
+  célébré sur la carte de la séance qui l'a posé) et utile pour la ré-ouverture 3.4.
+- **`card-format.ts` réutilise `effortsBasis` du feed (3.1)** importé **du fichier**
+  `../feed/labels` (et non du barrel `../feed`, qui ré-exporte des `.tsx` RN) : garde
+  les helpers **purs** testables en Node (même posture que `labels.test`/`metrics-format.test`).
+- **Tests app = logique pure (Node), pas de rendu RN.** Cohérent 1.4→3.2 : la DoD
+  « export image » est prouvée par l'**orchestration** (`share-card.test`, faux port :
+  image / repli texte / capture en échec / annulation) + les helpers
+  (`card-format.test`) + la surface (`sharing-api.test`). Le `tsc` couvre la carte,
+  le hook et l'adaptateur natif ; l'e2e api (`sharing.spec.ts`) prouve la composition.
+
+### Points laissés ouverts (reports explicites)
+
+- **Ré-ouverture du bilan simple depuis l'historique → 3.4.** Ici la carte est
+  proposée **à l'enregistrement**. L'onglet Historique (§6.4 : « Bilans : ✓ simple »)
+  rouvrira la **même** carte via le **même** endpoint `GET /sessions/:id/card`
+  (réutilisable tel quel — la composition est sans état) ; `metrics`/`feed` restent
+  inchangés.
+- **Bilan augmenté IA (4.5)** — badge **✦ augmenté**, génération Mistral, persistance,
+  proposé en plus à l'enregistrement (premium/pro) : **non amorcé** (aucun badge ✦,
+  aucun appel IA). Trois objets distincts (§8).
+- **Bilan de progression (4.4)** — rapport **multi-séances** sur une période
+  (PDF/lien, premium/pro) : **non amorcé** (aucun PDF, aucune curation de période).
+- **Capture web.** `react-native-view-shot` a un support web partiel ; sur web le
+  partage repliera sur `Share`/texte si la capture échoue (jamais de crash). Affiner
+  si une cible web devient prioritaire.
+- **Personnalisation de la carte** (thème, mention coach, QR vers un feed invité) :
+  hors périmètre v1 — la signature actuelle (barre + nom + HPT) suffit.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| L'enregistrement **propose** un bilan partageable (`[ Partager ] / [ Plus tard ]`), greffé sur la confirmation 2.3 | `capture.tsx` : bloc `saved` conserve « Enregistré » et insère `ShareProposal` (aperçu + 2 boutons) | ✅ (écran câblé ; tsc) |
+| Un **record propose sa carte** (laiton) ; sans record, récap **sans fausse célébration** | e2e `sharing.spec.ts` : séance@125 ⇒ `record: 125` ; séance@110 sous un record@120 ⇒ `record: null` ; `BilanCard` laiton **ssi** `record !== null` | ✅ |
+| L'**export image fonctionne** (rendu de la carte + partage natif) | `share-card.test.ts` : capture⇒partage **image** ; capture null/échec⇒**repli texte** sans crash ; adaptateur natif view-shot+expo-sharing (`tsc`) | ✅ |
+| `[ Plus tard ]` **n'impose rien** (referme sans friction) | `ShareProposal.onDismiss` = `router.back()` ; toujours disponible (même carte indisponible) | ✅ |
+| **Gratuit inclus** : aucune carte simple verrouillée | route `GET /sessions/:id/card` sous **JWT seul** (aucune garde d'entitlement) ; e2e : le propriétaire reçoit 200 | ✅ |
+| Taux/record **cohérents** avec `shared`/`metrics` (pas de recalcul divergent) | `résuméCarte` réutilise `faitsSéance` (§7/§9) ; record via `détecteJalons` (3.1, partagé avec `metrics`) ; e2e : taux 5/5=1 | ✅ |
+| **Plat / déclaratif** : pas de fausse célébration | e2e : Plat ⇒ `faits: null`, `record: null` ; `déclaratif`@140 ⇒ récap mais `record: null` (§2) | ✅ |
+| **Autorisation** : carte d'une séance d'un **autre compte** refusée ; non authentifié | e2e : B `GET …/card` sur la séance de A → **404** ; sans jeton → **401** | ✅ |
+| Aucun type d'API dupliqué | DTO/calc de `@hpt/shared` (`CarteBilan`, `résuméCarte`) ; `RésuméCarte` ≡ récap du DTO (`expectTypeOf`) | ✅ |
+| `pnpm lint` | `biome check .` (253 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **124 (shared, +11)** + 14 (api) + **117 (app : +16 sharing)** | ✅ 255/255 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 98 (lots 0.3→3.2) + **5 (sharing 3.3)** | ✅ 103/103 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 3.3 inclus) | ✅ |
+
+---
