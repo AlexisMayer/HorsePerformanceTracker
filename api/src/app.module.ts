@@ -5,6 +5,7 @@ import { DatabaseModule } from './db/database.module';
 import { FeedModule } from './feed/feed.module';
 import { HealthModule } from './health/health.module';
 import { HorsesModule } from './horses/horses.module';
+import { MetricsModule } from './metrics/metrics.module';
 import { SessionsModule } from './sessions/sessions.module';
 
 @Module({
@@ -16,6 +17,7 @@ import { SessionsModule } from './sessions/sessions.module';
     CombinationsModule,
     SessionsModule,
     FeedModule,
+    MetricsModule,
   ],
 })
 export class AppModule {}

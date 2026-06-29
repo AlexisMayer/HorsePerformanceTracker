@@ -10,6 +10,7 @@ import {
   useFeed,
 } from '../../feed';
 import { HorseSelector, useHorses } from '../../horses';
+import { MetricsHero } from '../../metrics';
 import { colors, spacing } from '../../theme';
 import { Screen } from '../../ui';
 import { EmptyState } from '../../ui/EmptyState';
@@ -23,10 +24,10 @@ import { ScreenHeader } from '../../ui/ScreenHeader';
  * (laiton) et **entrées de régularité** (Plat).
  *
  * **État vide = invitation** (UI/UX §7), jamais un vide muet. Le **bloc héros**
- * (courbe de hauteur maîtrisée + vitrine à records) est le lot **3.2** : il
- * s'insérera **au-dessus** de ce fil (cf. `ListHeaderComponent`) — on ne le
- * construit pas ici. Pagination simple (charge les plus anciennes en fin de
- * liste). Jamais verrouillé (gratuit).
+ * (courbe de hauteur maîtrisée + vitrine à records, lot **3.2**) est posé
+ * **au-dessus** du fil via `ListHeaderComponent` (`MetricsHero`) ; il reste discret
+ * tant qu'il n'y a rien à célébrer. Pagination simple (charge les plus anciennes en
+ * fin de liste). Jamais verrouillé (gratuit).
  */
 export default function FeedScreen() {
   const { currentHorse } = useHorses();
@@ -61,6 +62,7 @@ export default function FeedScreen() {
         renderItem={renderItem}
         contentContainerStyle={entrées.length === 0 ? styles.emptyContent : styles.listContent}
         showsVerticalScrollIndicator={false}
+        ListHeaderComponent={<MetricsHero chevalId={chevalId} />}
         ListEmptyComponent={
           <FeedEmpty
             chevalNom={currentHorse?.nom ?? null}
