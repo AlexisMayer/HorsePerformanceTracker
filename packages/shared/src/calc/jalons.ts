@@ -111,3 +111,20 @@ export function détecteJalons(séances: SéanceJalonInput[]): Jalon[] {
 
   return jalons;
 }
+
+/**
+ * Le **record absolu « gravé »** (§5.5) : le **plus haut franchissement propre**
+ * de tout l'historique `live`, ou `null`. Réutilise `détecteJalons` (les records
+ * y sont strictement croissants → le **dernier** est le maximum) — **une seule**
+ * implémentation, partagée par la **vitrine** et la **référence laiton** du héros
+ * maîtrisée (lot 3.2).
+ *
+ * Contrairement à la **hauteur maîtrisée** (plancher conservateur, fenêtré, qui
+ * peut redescendre), le record est **tout-temps** : une régression ultérieure ne
+ * l'efface **jamais** (l'accomplissement reste gravé). C'est la décision
+ * d'affichage que 3.1 laissait ouverte à la vitrine 3.2.
+ */
+export function recordAbsolu(séances: SéanceJalonInput[]): Jalon | null {
+  const records = détecteJalons(séances).filter((j) => j.type === 'record');
+  return records.length > 0 ? records[records.length - 1] : null;
+}

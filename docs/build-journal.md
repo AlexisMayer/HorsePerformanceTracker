@@ -1982,3 +1982,166 @@ graphes héros (3.2), **pas** de cartes partageables (3.3), **pas** d'historique
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 3.1 inclus) | ✅ |
 
 ---
+
+## Lot 3.2 — Métriques & graphes héros · 2026-06-29
+
+Deuxième morceau de la **Phase 3 (Restitution)**. Module **`metrics`** (api) +
+tranche **`app`** : les **deux graphes héros** (Spec §5.2) posés **au-dessus** du
+fil (3.1) dans l'onglet Feed — la **courbe de hauteur maîtrisée** (le plafond
+fiable + le grand chiffre du jour) et la **vitrine à records/jalons**. Principe :
+**montrer la maîtrise, pas l'activité** ; la maîtrisée **peut redescendre** sans
+jamais **effacer le record**. `metrics` est une surface de **lecture/composition**
+: il lit via le service `sessions` (jamais ses tables, Archi §1/§3) et **réutilise**
+les fonctions pures de `shared` — la détection record/jalon **posée en 3.1** et la
+**hauteur maîtrisée** ajoutée ici (§10). Strictement le lot 3.2 : **pas** le fil
+(3.1, livré), **pas** de cartes partageables (3.3), **pas** d'analytique de
+diagnostic (heatmap/benchmark 5.x = **premium**, hors set héros), **pas** de gating
+(les héros sont **gratuits**).
+
+### Emplacement (décisions tranchées)
+
+- **`shared` (calc + DTO)** — le calcul vit ici, **une seule** implémentation
+  (Archi §2) : `calc/hauteur-maitrisee.ts` (§10, `hauteurMaîtrisée` série + chiffre
+  courant, `hauteurMaîtriséeParmi` brique de bas niveau) ; `recordAbsolu` **ajouté
+  à `calc/jalons.ts`** (réutilise `détecteJalons`, ne le réimplémente pas) ;
+  `schemas/metrics.ts` (DTO `Métriques` = `maîtrise` + `vitrine`, `jalonSchema`,
+  `pointMaîtriseSchema`). La **brique 3.1** (`franchissementsObstacle/Tour`,
+  `SéanceJalonInput`) est **réutilisée** telle quelle.
+- **`api/src/metrics/`** — `metrics.service.ts` (compose via `SessionsService`),
+  `metrics.controller.ts` (`GET /horses/:id/metrics`, garde JWT), `metrics.module.ts`.
+  **Aucune** table, **aucune** écriture, **aucune** erreur de domaine propre (la
+  propriété/404 vient de `sessions`/`horses`). Importe `SessionsModule` (déjà
+  exporté en 3.1) — même posture que `feed`.
+- **`app/src/metrics/`** — `metrics-api.ts`, `use-metrics.ts` (`useQuery`),
+  `metrics-format.ts` (helpers **purs** testés), `mastery-curve.tsx` (courbe en
+  barres, signature §2), `mastery-hero.tsx` (grand chiffre + motif barre + courbe +
+  référence record laiton), `records-vitrine.tsx` (plaques laiton), `metrics-hero.tsx`
+  (le `ListHeaderComponent` du Feed). L'écran `(tabs)/index.tsx` reçoit le bloc
+  héros **au-dessus** du fil (le `ListHeaderComponent` réservé en 3.1).
+
+### Décisions tranchées (et pourquoi)
+
+- **Forme de la fonction maîtrisée §10 dans `shared` — et sa série temporelle.**
+  `hauteurMaîtriséeParmi(séances)` est la **brique pure** : elle agrège, par
+  hauteur, les **franchissements propres** (total) et les **séances distinctes**
+  (un `Set` d'`id`) qui y contribuent, puis renvoie la **plus haute** hauteur
+  atteignant **≥ 3 franchissements propres sur ≥ 2 séances** (seuils §10 en
+  constantes nommées), ou `null`. `hauteurMaîtrisée(séances)` est l'entrée de haut
+  niveau : elle **filtre le `live`** (§2), trie par date, et produit **un point par
+  séance** (la **série** = la courbe) + le **chiffre courant** (= dernier point).
+- **Pourquoi une fenêtre glissante (et comment la maîtrisée « redescend »).** §10
+  comptée **tout-temps** serait **monotone** (un palier acquis ne retombe jamais) —
+  incompatible avec l'honnêteté §5.5 (« la maîtrisée peut redescendre — régression,
+  reprise post-blessure »). Chaque point est donc la maîtrisée **sur une fenêtre
+  glissante** `(date − FENÊTRE, date]` : quand des hauteurs ne sont **plus
+  corroborées récemment**, elles sortent du plancher et **la maîtrisée baisse**.
+  `FENÊTRE_MAÎTRISE_JOURS = 365` (≈ une année sportive) — **généreuse** pour ne pas
+  dramatiser une coupure courte, **constante unique tunable** (cf. points ouverts).
+  La fenêtre est **relative à la dernière séance des données**, jamais à
+  `Date.now()` : la fonction reste **pure et déterministe** (testable avec des dates
+  fixes).
+- **Réutilisation de la détection record/jalon de 3.1 pour la vitrine.** Le
+  **record absolu « gravé »** (§5.5) est `recordAbsolu(séances)` : un mince dérivé
+  **par-dessus `détecteJalons`** (les records y sont strictement croissants → le
+  **dernier est le maximum**). Il est **tout-temps** (jamais fenêtré) : une
+  régression ultérieure **ne l'efface jamais**. La vitrine présente ce record **+
+  la liste de jalons** de `détecteJalons` — **aucune** réimplémentation (la décision
+  d'affichage « le record reste gravé » que 3.1 laissait à 3.2 est ici posée :
+  fenêtre pour la maîtrisée, tout-temps pour le record).
+- **Modèle de lecture du module `metrics`.** **Un seul** endpoint
+  `GET /horses/:id/metrics` renvoyant les **deux** héros (`maîtrise` + `vitrine`) :
+  une seule requête, une seule clé de cache TanStack, pas de cascade de waterfalls
+  (les deux surfaces s'affichent ensemble dans le même `ListHeaderComponent`). Le
+  service **orchestre** `shared` (zéro calcul local), lit via
+  `SessionsService.listForHorse` (404 sans fuite si étranger), projette
+  `SéanceSortie → SéanceJalonInput` (glue de champs, miroir du feed), et **valide au
+  bord** (`métriquesSchema.parse`, Archi §5).
+- **Comment l'UI encode la baisse sans effacer le record.** Le bloc maîtrisée
+  affiche le **grand chiffre** (échelle hero, **chiffres tabulaires**, vert
+  sous-bois = couleur de maîtrise §2) ; le **record** l'accompagne en **référence
+  laiton** (« le plafond au-dessus du plancher »). La **courbe en barres**
+  (signature « hauteur-comme-barre », §2) montre la montée **et** la baisse : une
+  régression = des barres plus courtes, un point non maîtrisé = un **creux** (fine
+  ligne de base). Aucun traitement dramatique (UI/UX §7 : « assume la baisse sans
+  dramatiser ») ; la **vitrine** garde le record en plaque laiton, intact. Le bloc
+  héros **ne rend rien** tant qu'il n'y a rien à célébrer (Plat seul / pas de
+  franchissement) — l'invitation du fil opère (§7).
+- **Aucune forme dupliquée, alignement prouvé (Archi §2).** Les DTO viennent de
+  `@hpt/shared` ; `Jalon` (calc) ≡ `JalonDto` (Zod) et `PointMaîtrise` ≡
+  `PointMaîtriseDto` sont garantis par `expectTypeOf().toEqualTypeOf()`. Les types
+  inférés de Zod portent le suffixe `Dto`/`MaîtriseDto` pour **éviter la collision**
+  de barrel avec les interfaces `calc` (mêmes noms `Maîtrise`/`PointMaîtrise`),
+  comme `FaitsSéance`/`FaitsSéanceDto` en 3.1.
+
+### Écarts vs cadrage (consignés)
+
+- **Fenêtre de récence ajoutée au §10 — décision assumée.** Le Modèle §10 définit
+  la maîtrise sans fenêtre ; la Spec §5.5 exige qu'elle **redescende**. Les deux ne
+  se concilient qu'avec une **récence** : on l'ajoute (fenêtre glissante, constante
+  unique tunable) **sans toucher** au comptage §10 (≥ 3 / ≥ 2), et on la **journalise
+  comme décision tranchée**. Le **record**, lui, reste fidèle au §10 « tout-temps ».
+- **Le `record` (cm) figure aussi dans le bloc `maîtrise`** (pas seulement la
+  vitrine) : c'est une **référence d'affichage** (la barre laiton au-dessus de la
+  barre maîtrisée, signature §2), pas un troisième héros. Les **deux** surfaces
+  héros restent **exactement deux** (Spec §5.2) ; il n'y a **pas** de graphe de
+  taux (déjà encodé dans la maîtrisée).
+- **Projection `SéanceSortie → SéanceJalonInput` dupliquée** (privée à
+  `metrics.service`, miroir de celle du feed). C'est une **glue de champs** (pas un
+  **dérivé** §2 : aucun calcul). On **ne touche pas** au feed livré (3.1) pour la
+  hisser dans `shared` — point de nettoyage noté ci-dessous.
+- **Courbe en barres « maison » (pas de lib de graphe).** La signature
+  « hauteur-comme-barre » (§2) se rend en `View` normalisées (positions par **index
+  chronologique**, pas par date) — pas de dépendance ajoutée, pas d'abstraction
+  prématurée. Le sens passe par le **grand chiffre** ; la courbe est **décorative**
+  (masquée aux lecteurs d'écran pour éviter un brouhaha de barres).
+- **Vitrine = record + premières fois** (les deux familles de 3.1). Les **« séries
+  propres »** (3ᵉ famille citée §5.2) restent un **enrichissement ultérieur** —
+  `TYPES_JALON` est extensible sans casse (déjà noté en 3.1). Dans la vitrine, un
+  **ancien record** redevient une **« première fois »** du palmarès (dédupliqué par
+  hauteur, le plus haut en tête).
+
+### Points laissés ouverts (reports explicites)
+
+- **Cartes partageables (3.3)** réutiliseront le **record** (mis en avant, §5.4) et
+  les **taux** (`faitsSéance`, §7/§9 — déjà dans `shared`) ; un record affiché en
+  vitrine **n'est pas** une carte exportable (hors périmètre ici).
+- **Heatmap type × hauteur** et **benchmark à combinaison constante** (5.1/5.2)
+  restent **hors du set héros** (Spec §5.3) — outils de **diagnostic premium**.
+  **Consigne respectée** : rien de tel ici.
+- **Bilan de progression (4.4)** réutilisera la **hauteur maîtrisée** (`shared`,
+  posée ici) + la **régularité** (dates de séance) ; la **fenêtre** `FENÊTRE_MAÎTRISE_JOURS`
+  y sera (re)confirmée avec le produit/UX (durée tunable, une seule source).
+- **Coût de recalcul.** Comme le feed (3.1), `metrics` **recompose** depuis
+  l'historique `live` complet à chaque lecture (la série est `O(n²)` sur la fenêtre).
+  Correct et simple à l'échelle v1 ; un calcul **incrémental/caché** sera utile si un
+  cheval accumule des centaines de séances.
+- **Hoisting de la projection `SéanceSortie → SéanceJalonInput`** dans `shared`
+  (réutilisée par `feed` **et** `metrics`) : nettoyage possible quand on touchera de
+  nouveau au feed — évité ici pour ne pas déborder sur 3.1 (livré).
+- **Chiffre courant à la dernière séance** (pas à `Date.now()`) : un cheval inactif
+  depuis > 1 an conserve donc sa dernière maîtrisée affichée plutôt que de tomber à
+  `null` — choix conservateur (« ne dramatise pas »), à reconsidérer si un signal
+  « hors de forme » devient souhaitable.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Courbe & records à jour** : maîtrisée + vitrine reflètent les séances `live` | e2e `metrics.spec.ts` : `GET …/metrics` → `maîtrise.courante`, `série`, `vitrine.record`/`jalons` ; unités `hauteur-maitrisee.test.ts` | ✅ |
+| **La maîtrisée peut redescendre sans effacer le record** (test explicite) | unité : régression > 1 an ⇒ `courante` 115→**105** (fenêtre), `recordAbsolu` reste **125** ; e2e : plancher **<** record (115 < 125) | ✅ |
+| **Plat exclu** des hauteurs ; **`déclaratif` exclu** des agrégats | unité (Plat 0 hauteur, déclaratif@140 ignoré) **+** e2e (maîtrisée/record restent à 110 malgré Plat & déclaratif@140) | ✅ |
+| **Hauteur maîtrisée testée dans `shared`** (§10, une seule implémentation) | `hauteur-maitrisee.test.ts` (13 : seuils ≥3/≥2, combinaison conservatrice, tour, max, fenêtre) | ✅ |
+| **La vitrine réutilise la détection record de 3.1** | `recordAbsolu` dérive de `détecteJalons` (jamais réimplémenté) ; vitrine = record + jalons | ✅ |
+| **Composition via le service `sessions`** (jamais ses tables, Archi §1/§3) | `metrics.service` consomme `SessionsService.listForHorse` ; `metrics` n'a ni table ni écriture | ✅ |
+| **Exactement 2 héros**, **pas** de graphe de taux ; **gratuits** (jamais verrouillés) | `Métriques` = `maîtrise` + `vitrine` ; route hors gating (4.1) ; `MetricsHero` discret si rien à montrer | ✅ |
+| **Autorisation** : métriques d'un cheval d'un **autre compte** refusées ; non authentifié | e2e : B `GET …/metrics` sur le cheval de A → **404** ; sans jeton → **401** | ✅ |
+| Accessibilité (UI/UX §8) | grand chiffre **hero** lisible, **chiffres tabulaires** (`StatText`), contraste AA+ (tokens), libellés accessibles ; laiton **réservé** à la célébration | ✅ |
+| Aucun type d'API dupliqué | DTO/calc de `@hpt/shared` (`Métriques`, `hauteurMaîtrisée`, `recordAbsolu`) ; `Jalon ≡ JalonDto`, `PointMaîtrise ≡ PointMaîtriseDto` (`expectTypeOf`) | ✅ |
+| `pnpm lint` | `biome check .` (233 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **113 (shared, +19)** + 14 (api) + **101 (app : +9 metrics)** | ✅ 228/228 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 94 (lots 0.3→3.1) + **4 (metrics 3.2)** | ✅ 98/98 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 3.2 inclus) | ✅ |
+
+---
