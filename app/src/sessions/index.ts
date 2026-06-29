@@ -8,7 +8,7 @@
  */
 export { ChipGroup, type ChipOption } from './chips';
 export { DifficultyMarker } from './difficulty-marker';
-export { canSave, formatDateModification } from './draft';
+export { canSave, formatDateModification, formatRate } from './draft';
 export { sessionErrorMessage } from './error-messages';
 export { ObstacleEditor } from './obstacle-editor';
 export { TourEditor } from './tour-editor';

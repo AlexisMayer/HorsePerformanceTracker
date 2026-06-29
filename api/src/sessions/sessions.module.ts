@@ -19,10 +19,17 @@ import { SessionsService } from './sessions.service';
  * `CombinationsService` pour **valider la propriété** de la ref (404 sinon),
  * **copier `nombre_d_éléments`** inline et **enregistrer l'usage** — via le
  * service exposé, jamais en lisant la table `combinaison` (Architecture §1).
+ *
+ * **`SessionsService` exporté (lot 3.1)** : le module `feed` le consomme pour
+ * **lire** l'historique d'un cheval (`listForHorse`) et composer le fil — un
+ * domaine en consomme un autre via son service exposé, jamais ses tables
+ * (Architecture §1/§3). `sessions` reste le gardien de l'écriture ; `feed` ne
+ * fait que lire.
  */
 @Module({
   imports: [PassportModule, HorsesModule, CombinationsModule],
   controllers: [SessionsController],
   providers: [SessionsService],
+  exports: [SessionsService],
 })
 export class SessionsModule {}
