@@ -2,6 +2,7 @@ export * from './account-export';
 export * from './auth';
 export * from './champs-techniques';
 export * from './cheval';
+export * from './combinaison';
 export * from './compte';
 export * from './contexte';
 export * from './obstacle';

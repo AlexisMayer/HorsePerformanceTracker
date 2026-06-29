@@ -12,6 +12,8 @@
  * et dispatcher des actions.
  */
 import {
+  type CombinaisonCréerDto,
+  type CombinaisonSortie,
   type ContexteCréerDto,
   estCombinaison,
   estConcours,
@@ -53,10 +55,16 @@ export interface ObstacleDraft {
   refus: number;
   /** Marqueur de difficulté optionnel (couche contexte, jamais agrégé — Modèle §1). */
   difficulté: number | null;
-  /** Combinaison : nombre d'éléments (≥ 2, multiplicateur du dénominateur — §7). */
+  /** Combinaison : nombre d'éléments (≥ 2, multiplicateur du dénominateur — §7).
+   *  Renseigné inline OU **copié** d'une réutilisable sélectionnée (pour l'aperçu). */
   nombre_d_éléments: number;
-  /** Combinaison : détail ordonné des types, saisi à la main (optionnel — 2.5 = bibliothèque). */
+  /** Combinaison : détail ordonné des types, saisi à la main (vide si instanciée
+   *  depuis une réutilisable — `éléments` alors **hérités** via la ref). */
   éléments: TypeObstacleSimple[];
+  /** Combinaison : lien vers une réutilisable sélectionnée (2.5), ou `null`
+   *  (combinaison inline). Émis tel quel ; la structure n'est alors **pas** émise
+   *  (le serveur copie `nombre_d_éléments` et hérite `éléments`). */
+  combinaison_ref: string | null;
 }
 
 /** Un tour de concours en cours d'édition (le sans-faute est dérivé, jamais saisi). */
@@ -132,6 +140,7 @@ export function newObstacle(overrides: Partial<ObstacleDraft> = {}): ObstacleDra
     difficulté: null,
     nombre_d_éléments: MIN_ÉLÉMENTS,
     éléments: [],
+    combinaison_ref: null,
     ...overrides,
   };
 }
@@ -166,6 +175,8 @@ export function duplicateObstaclePlus5(o: ObstacleDraft): ObstacleDraft {
     répétitions: o.répétitions,
     nombre_d_éléments: o.nombre_d_éléments,
     éléments: [...o.éléments],
+    // Le lien vers la réutilisable suit (on rejoue la même combinaison plus haut).
+    combinaison_ref: o.combinaison_ref,
   });
 }
 
@@ -192,6 +203,7 @@ export function draftFromPreviousSession(prev: SéanceSortie): SessionDraft {
         répétitions: clampCounter(o.répétitions, 1),
         nombre_d_éléments: o.nombre_d_éléments ?? MIN_ÉLÉMENTS,
         éléments: (o.éléments ?? []) as TypeObstacleSimple[],
+        combinaison_ref: o.combinaison_ref ?? null,
       }),
     ),
   };
@@ -239,6 +251,7 @@ export function draftFromSession(s: SéanceSortie): SessionDraft {
         difficulté: o.difficulté ?? null,
         nombre_d_éléments: o.nombre_d_éléments ?? MIN_ÉLÉMENTS,
         éléments: (o.éléments ?? []) as TypeObstacleSimple[],
+        combinaison_ref: o.combinaison_ref ?? null,
       }),
     ),
   };
@@ -305,13 +318,52 @@ function obstacleToDto(o: ObstacleDraft): ObstacleCréerDto {
     ...(o.difficulté != null ? { difficulté: o.difficulté } : {}),
   };
   if (!estCombinaison(o.type)) return base;
+  // **Instanciée** (2.5) : on n'émet que la `combinaison_ref` — « on ne saisit que
+  // la hauteur ». Le serveur copie `nombre_d_éléments` et hérite `éléments` ; les
+  // émettre serait rejeté (schéma `obstacleCréerSchema`).
+  if (o.combinaison_ref) {
+    return { ...base, combinaison_ref: o.combinaison_ref };
+  }
+  // **Inline** (2.3) : `nombre_d_éléments` requis ; le détail des éléments n'est
+  // émis que s'il est **complet** (le serveur exige la concordance). Incomplet → omis.
   return {
     ...base,
     nombre_d_éléments: o.nombre_d_éléments,
-    // Le détail des éléments n'est émis que s'il est **complet** : le serveur
-    // exige `éléments.length === nombre_d_éléments`. Incomplet → on l'omet.
     ...(o.éléments.length === o.nombre_d_éléments ? { éléments: o.éléments } : {}),
   };
+}
+
+/**
+ * Sélectionne une **réutilisable** pour un obstacle Combinaison (instanciation,
+ * 2.5) : pose le lien (`combinaison_ref`), **copie** `nombre_d_éléments` (pour
+ * l'aperçu du taux / le dénominateur) et **vide** le détail inline (`éléments`
+ * sera **hérité** via la ref côté serveur — on ne le duplique pas). « On ne
+ * saisit ensuite que la hauteur » (Modèle §8).
+ */
+export function selectReusable(combo: CombinaisonSortie): Partial<ObstacleDraft> {
+  return { combinaison_ref: combo.id, nombre_d_éléments: combo.nombre_d_éléments, éléments: [] };
+}
+
+/**
+ * **Détache** la réutilisable d'un obstacle : repasse en combinaison **inline**
+ * (on conserve `nombre_d_éléments` comme cardinal de départ ; le détail reste à
+ * compléter à la main). N'envoie plus de `combinaison_ref` au serveur.
+ */
+export function unlinkReusable(): Partial<ObstacleDraft> {
+  return { combinaison_ref: null };
+}
+
+/**
+ * Projette un obstacle Combinaison **inline détaillé** vers un `CombinaisonCréerDto`
+ * pour l'**enregistrer comme réutilisable** (« enregistrer cette combinaison »,
+ * Spec §4.3). Renvoie `null` si l'obstacle n'est pas une combinaison, est déjà
+ * lié, ou n'a pas un détail **complet** (`éléments.length === nombre_d_éléments`,
+ * ≥ 2) — une réutilisable sans détail n'aurait rien à réutiliser.
+ */
+export function obstacleToCombinaisonDto(o: ObstacleDraft): CombinaisonCréerDto | null {
+  if (!estCombinaison(o.type) || o.combinaison_ref) return null;
+  if (o.nombre_d_éléments < MIN_ÉLÉMENTS || o.éléments.length !== o.nombre_d_éléments) return null;
+  return { nombre_d_éléments: o.nombre_d_éléments, éléments: [...o.éléments] };
 }
 
 function tourToDto(t: TourDraft): TourCréerDto {

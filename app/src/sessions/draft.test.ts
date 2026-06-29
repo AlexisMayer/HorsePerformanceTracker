@@ -1,4 +1,5 @@
 import {
+  type CombinaisonSortie,
   type SéanceSortie,
   séanceCréerSchema,
   séanceModifierSchema,
@@ -22,10 +23,27 @@ import {
   newObstacle,
   newTour,
   obstaclePreviewRate,
+  obstacleToCombinaisonDto,
   resizeÉléments,
   type SessionDraft,
+  selectReusable,
   stepHauteur,
+  unlinkReusable,
 } from './draft';
+
+/** UUID valide : la `combinaison_ref` est validée par `z.string().uuid()` au bord. */
+const REUSABLE_ID = '11111111-1111-1111-1111-111111111111';
+
+const REUSABLE: CombinaisonSortie = {
+  id: REUSABLE_ID,
+  created_at: new Date(),
+  updated_at: new Date(),
+  compte_id: 'c1',
+  nom: 'Triple oxer',
+  nombre_d_éléments: 3,
+  éléments: ['Oxer', 'Oxer', 'Oxer'],
+  usage_count: 5,
+};
 
 describe('hauteur & compteurs (helpers purs)', () => {
   it('clampHauteur ramène sur le cran de 5 le plus proche, borné [60,160]', () => {
@@ -132,6 +150,7 @@ const PREV_TRAINING: SéanceSortie = {
       difficulté: 3,
       nombre_d_éléments: null,
       éléments: null,
+      combinaison_ref: null,
     },
   ],
   tours: [],
@@ -355,6 +374,7 @@ describe('draftFromSession (édition, lot 2.4)', () => {
           difficulté: 3,
           nombre_d_éléments: null,
           éléments: null,
+          combinaison_ref: null,
         },
       ],
       contexte: {
@@ -395,6 +415,7 @@ describe('draftFromSession (édition, lot 2.4)', () => {
           difficulté: null,
           nombre_d_éléments: 2,
           éléments: ['Vertical', 'Oxer'],
+          combinaison_ref: null,
         },
       ],
     });
@@ -461,5 +482,108 @@ describe('formatDateModification (honnêteté d’interface, §7)', () => {
   it('vide quand jamais éditée (null) ou date invalide', () => {
     expect(formatDateModification(null)).toBe('');
     expect(formatDateModification('pas-une-date')).toBe('');
+  });
+});
+
+describe('combinaisons réutilisables (lot 2.5)', () => {
+  it('selectReusable pose la ref, copie nombre_d_éléments (aperçu), vide le détail', () => {
+    const patch = selectReusable(REUSABLE);
+    expect(patch).toEqual({ combinaison_ref: REUSABLE_ID, nombre_d_éléments: 3, éléments: [] });
+  });
+
+  it('unlinkReusable retire la ref (retour inline)', () => {
+    expect(unlinkReusable()).toEqual({ combinaison_ref: null });
+  });
+
+  it('un obstacle instancié n’émet QUE la combinaison_ref (hauteur seule, §8)', () => {
+    const o = newObstacle({
+      ...selectReusable(REUSABLE),
+      type: 'Combinaison',
+      hauteur: 115,
+      barres: 1,
+    });
+    const dto = draftToCreateDto({ ...emptyDraft('Parcours'), obstacles: [o] });
+    const projected = dto.obstacles?.[0];
+    expect(projected).toMatchObject({
+      type: 'Combinaison',
+      hauteur: 115,
+      combinaison_ref: REUSABLE_ID,
+    });
+    // La structure n'est PAS émise : le serveur la copie/hérite.
+    expect(projected).not.toHaveProperty('nombre_d_éléments');
+    expect(projected).not.toHaveProperty('éléments');
+    // Reste un DTO valide pour le serveur (instanciation acceptée).
+    expect(() => séanceCréerSchema.parse(dto)).not.toThrow();
+  });
+
+  it('l’aperçu du taux reste exact pour un obstacle instancié (nombre copié)', () => {
+    const o = newObstacle({
+      ...selectReusable(REUSABLE),
+      type: 'Combinaison',
+      répétitions: 2,
+      barres: 1,
+    });
+    // dénominateur = rép × éléments = 2 × 3 = 6 ; (6 − 1)/6
+    expect(obstaclePreviewRate(o)).toBe(
+      tauxCombinaison({ répétitions: 2, nombre_d_éléments: 3, barres: 1, refus: 0 }),
+    );
+  });
+
+  it('obstacleToCombinaisonDto : émet la structure d’un détail complet et inline', () => {
+    const complet = newObstacle({
+      type: 'Combinaison',
+      nombre_d_éléments: 2,
+      éléments: ['Vertical', 'Oxer'],
+    });
+    expect(obstacleToCombinaisonDto(complet)).toEqual({
+      nombre_d_éléments: 2,
+      éléments: ['Vertical', 'Oxer'],
+    });
+  });
+
+  it('obstacleToCombinaisonDto : null si incomplet, déjà lié, ou non-combinaison', () => {
+    const incomplet = newObstacle({
+      type: 'Combinaison',
+      nombre_d_éléments: 3,
+      éléments: ['Vertical'],
+    });
+    expect(obstacleToCombinaisonDto(incomplet)).toBeNull();
+
+    const déjàLié = newObstacle({ ...selectReusable(REUSABLE), type: 'Combinaison' });
+    expect(obstacleToCombinaisonDto(déjàLié)).toBeNull();
+
+    const simple = newObstacle({ type: 'Oxer' });
+    expect(obstacleToCombinaisonDto(simple)).toBeNull();
+  });
+
+  it('la duplication « +5 cm » conserve le lien réutilisable', () => {
+    const o = newObstacle({ ...selectReusable(REUSABLE), type: 'Combinaison', hauteur: 110 });
+    expect(duplicateObstaclePlus5(o)).toMatchObject({ combinaison_ref: REUSABLE_ID, hauteur: 115 });
+  });
+
+  it('draftFromSession reprend la combinaison_ref d’un obstacle instancié', () => {
+    const session = makeSortie({
+      type: 'Parcours',
+      obstacles: [
+        {
+          ...{ id: 'o1', created_at: new Date(), updated_at: new Date() },
+          seance_id: 'x',
+          type: 'Combinaison',
+          hauteur: 120,
+          répétitions: 2,
+          barres: 0,
+          refus: 0,
+          difficulté: null,
+          nombre_d_éléments: 3,
+          éléments: null,
+          combinaison_ref: REUSABLE_ID,
+        },
+      ],
+    });
+    const draft = draftFromSession(session);
+    expect(draft.obstacles[0]).toMatchObject({
+      combinaison_ref: REUSABLE_ID,
+      nombre_d_éléments: 3,
+    });
   });
 });

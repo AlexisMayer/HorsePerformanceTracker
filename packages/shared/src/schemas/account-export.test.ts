@@ -56,6 +56,7 @@ describe('accountExportSchema (portabilité)', () => {
                   difficulté: null,
                   nombre_d_éléments: null,
                   éléments: null,
+                  combinaison_ref: null,
                 },
               ],
               tours: [],

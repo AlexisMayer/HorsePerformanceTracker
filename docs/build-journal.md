@@ -1608,3 +1608,208 @@ métriques/feed/records (3.x), ni historique riche (3.4).
 | `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** (21 routes, `/sessions/[id]/edit` incluse) | ✅ vert |
 | `db:verify` (Postgres requis) | Vitest — e2e `sessions-edit.spec.ts` (édition/suppression/contribution/autorisation) ajouté au job `db` | ✅ posé (CI) |
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 2.4 inclus) | ✅ |
+
+---
+
+## Lot 2.5 — Combinaisons réutilisables · 2026-06-29
+
+**Dernière brique de la Phase 2 (Capture).** Module **`combinations`**
+(Architecture §3) : une **bibliothèque au niveau du compte** de combinaisons
+réutilisables, l'**enregistrement** d'une combinaison depuis une séance, et
+l'**instanciation** dans une séance **en ne saisissant que la hauteur** (Modèle
+§8, Spec §4). On crée l'entité `Combinaison réutilisable` (différée du socle
+0.2/0.3) et on **branche `combinaison_ref`** sur `Obstacle` (reporté de 0.3).
+Strictement le lot 2.5 : ni benchmark analytique (5.2), ni métriques/feed (3.x),
+ni plafond de bibliothèque (4.1).
+
+### Emplacement (décisions tranchées)
+
+- **Module API** : `api/src/combinations/` (par domaine, §1/§3) —
+  `combinations.service` (domaine, bibliothèque scopée compte + surface exposée à
+  `sessions`), `combinations.controller` (frontière HTTP sous `JwtAccessGuard`),
+  `combinations.errors` (`CombinaisonNotFoundError` 404, `CombinaisonInvalideError`
+  400), `combinations.module`. Enregistré dans `app.module.ts` **avant**
+  `SessionsModule`. DB via le `DatabaseModule` `@Global` (1.1) ; `PassportModule`
+  importé pour la garde.
+- **Schéma + migration** : `api/src/db/schema/combinaison.ts` (table) +
+  `combinaison_ref` ajouté à `obstacle.ts` ; migration **additive**
+  `api/drizzle/0004_combinations.sql` — **là où l'api possède la DB** (cohérent
+  0.3). Alignement étendu (`alignment.spec.ts` : Combinaison + Obstacle).
+- **Contrats `shared`** : `types/combinaison.ts` (`CombinaisonRéutilisable`),
+  `schemas/combinaison.ts` (DTO Créer/Modifier/Sortie + `nomAutoCombinaison`),
+  `combinaison_ref` ajouté à `types/obstacle.ts` et `schemas/obstacle.ts`
+  (entrée + sortie). Barrels mis à jour.
+- **Tranche front** : `app/src/combinations/` (`combinations-api`,
+  `combinations-context` + `useCombinations`), écran **bibliothèque**
+  `app/src/app/combinations/index.tsx`, **sélection / enregistrement** intégrés à
+  `ObstacleEditor` (2.3) ; helpers purs (`selectReusable`, `unlinkReusable`,
+  `obstacleToCombinaisonDto`, projection `combinaison_ref`) dans `sessions/draft.ts`.
+  `CombinationsProvider` monté dans `_layout.tsx` ; entrée « Mes combinaisons »
+  dans l'onglet **Profil**.
+
+### Décisions tranchées (et pourquoi)
+
+- **Schéma `combinaison` — portée compte, sans hauteur, + compteurs d'usage
+  techniques.** Colonnes de domaine (Modèle §8) : **FK `compte_id` en `ON DELETE
+  CASCADE`** (PAS un cheval — bibliothèque de compte ; purge RGPD structurelle,
+  cohérent avec la cascade descendante du socle et `refresh_token`), `nom`,
+  `nombre_d_éléments`, `éléments` (`jsonb` `NOT NULL`, liste **ordonnée** de types
+  simples — même choix qu'`obstacle.éléments` en 0.3) ; **PAS de hauteur** (fournie
+  à l'instanciation). Plus deux colonnes **techniques** du **tri anti-bloat** :
+  `usage_count` (`int`, défaut 0) et `last_used_at` (`timestamptz` nullable),
+  bumpées à l'instanciation. Hors Modèle de données ⇒ **exclues de l'alignement
+  `shared`** (même posture que `idempotency_key` sur `Séance` en 2.2 :
+  `NullToOptional<Omit<…, 'usage_count' | 'last_used_at'>>`). Clés ASCII, noms de
+  colonnes désaccentués (`nombre_d_elements`, `elements`) comme en 0.3.
+- **`combinaison_ref` sur `Obstacle` — ajouté ici, `ON DELETE SET NULL`.**
+  Migration **additive** : colonne **nullable**, **FK vers `combinaison`**, **`ON
+  DELETE SET NULL`**. Si une réutilisable est supprimée, l'obstacle **conserve**
+  ses valeurs d'instanciation (`nombre_d_éléments` copié inline, hauteur,
+  barres/refus) et donc son **taux** (§7, self-contained) ; il perd seulement le
+  **lien nommé** et l'héritage des `éléments`. **Coût consigné pour 5.2** : un
+  obstacle dé-lié rompt la **continuité de benchmark à combinaison constante**
+  (son `combinaison_ref` devient `null` — il n'est plus rattaché à l'identité
+  suivie). C'est le prix assumé du `SET NULL` (vs un `RESTRICT` qui interdirait la
+  suppression, ou un `CASCADE` qui détruirait des séances historiques — tous deux
+  pires). 5.2 devra traiter les obstacles `combinaison_ref IS NULL` comme des
+  points hors-série du benchmark.
+- **Instanciation : `nombre_d_éléments` copié inline (serveur) vs `éléments`
+  hérité (ref).** « On ne saisit que la hauteur (+ rép/fautes) » (Modèle §8) :
+  l'`obstacleCréerSchema` **interdit** `nombre_d_éléments` et `éléments` dans le
+  corps **quand `combinaison_ref` est fourni** (sinon 400). Le **service
+  `sessions`** valide la propriété de la ref, lit `nombre_d_éléments` sur la
+  réutilisable et le **copie inline** sur la ligne obstacle (structurel, **requis
+  par la formule §7** — garde le calcul self-contained, cohérent 2.2/2.3) ;
+  `éléments` reste **`null` inline** (hérité via la ref, **non dupliqué**). Choix
+  **« serveur copie »** (vs « client renvoie le nombre ») : fidèle au littéral du
+  Modèle §8, et la copie est gratuite puisque la couture lit déjà la réutilisable
+  pour valider la propriété. Conséquence prouvée : **taux exact** à
+  l'instanciation **et** après dé-liaison (`SET NULL` laisse `nombre_d_éléments`).
+- **Création depuis une séance.** Un obstacle Combinaison **détaillé inline** (2.3)
+  se projette en `CombinaisonCréerDto` via `obstacleToCombinaisonDto`
+  (`éléments` complet requis) ⇒ `POST /combinations` ⇒ l'obstacle est **lié** à la
+  réutilisable créée (détail désormais hérité, suivi possible en 5.2). Création
+  **directe** (sans séance) supportée par le même endpoint.
+- **Modification = nouvelle (sémantique exposée par l'API).** `PATCH
+  /combinations/:id` **ne mute pas** la ligne — il **dérive une nouvelle**
+  combinaison (l'ancienne **intacte** : même `id`, mêmes obstacles liés, même
+  `usage_count`) et la **renvoie** ; la nouvelle **repart d'un usage à zéro**
+  (identité neuve). Pas de versioning, pas de colonne de lignée : l'identité
+  (`id`) est stable → benchmark fiable (5.2). Le corps (partiel) est **fusionné**
+  avec l'ancienne (un champ absent hérite) ; changer `nombre_d_éléments` **sans**
+  fournir une liste `éléments` du même cardinal est rejeté
+  (`CombinaisonInvalideError`, 400 — la liste ordonnée **est** la structure, on ne
+  devine pas les types manquants).
+- **Tri anti-bloat « par usage ».** `usage_count` est un compteur **monotone**
+  d'instanciations (signal « plus utilisées »), bumpé par le service `combinations`
+  **à la création de séance uniquement** (pas à l'édition — éditer une séance n'est
+  pas une nouvelle réutilisation ; pas au rejeu idempotent — pas de double compte).
+  `list` ordonne `usage_count DESC, last_used_at DESC NULLS LAST, created_at DESC` :
+  les plus utilisées d'abord, puis les récemment utilisées, une jamais-utilisée
+  tombant en bas (la plus récemment **créée** en tête de ce bloc). Compteur
+  dénormalisé (vs comptage de références vivantes) : il survit au `SET NULL`, à
+  l'édition de séance (réécriture des obstacles) et à « modification = nouvelle »
+  (la nouvelle repart à 0) — il mesure « combien de fois j'ai **dégainé** ce
+  modèle », exactement le signal anti-bloat voulu.
+- **Auto-nommage** (`nomAutoCombinaison`, pur, dans `shared`) : libellé de
+  cardinalité (« Double », « Triple », « Quadruple », sinon « Combinaison à N
+  éléments ») suffixé du **type dominant** si tous les éléments sont identiques
+  (« Triple oxer »). Posé par le service quand `nom` est absent ; **renommage
+  optionnel** ; **noms non uniques** (l'identité est l'`id`, pas le nom).
+- **Couture `sessions` ↔ `combinations` — via le service exposé (§1).**
+  `CombinationsService` **exporté** ; `SessionsModule` importe `CombinationsModule`.
+  `sessions` consomme **deux** méthodes : `findForAccount(compteId, ref)` (valide
+  la propriété → 404 `CombinaisonNotFoundError`, renvoie la réutilisable pour la
+  copie de `nombre_d_éléments`) et `recordUsage(compteId, ids)` (bump après une
+  création réussie). **Jamais de lecture de la table `combinaison`** depuis
+  `sessions` — seule la **FK de référence** traverse la frontière (dépendances
+  orientées `sessions → combinations`, sans cycle : `combinations` ne dépend que
+  d'`auth-account`).
+- **Forme des DTO `shared`.** `combinaisonCréerSchema` (`nom?`,
+  `nombre_d_éléments`, `éléments` requis ≥ 2, concordance vérifiée) ;
+  `combinaisonModifierSchema` (tous optionnels, corps non vide, concordance si les
+  deux fournis — sémantique « = nouvelle ») ; `combinaisonSortieSchema` (champs de
+  domaine + **`usage_count` exposé** comme signal anti-bloat ; `last_used_at`
+  **interne**, retiré par `.strip()`). `obstacleCréerSchema`/`obstacleSortieSchema`
+  étendus de `combinaison_ref` (entrée : UUID optionnel, conditionnel au type
+  Combinaison ; sortie : `string | null`). Aucun type dupliqué (app + api
+  importent ces DTO).
+- **Tranche front — sélection, enregistrement, bibliothèque.** `ObstacleEditor`
+  (réutilisé par saisie 2.3 **et** édition 2.4) ouvre, pour une Combinaison : soit
+  le **détail inline** + bouton **« Enregistrer cette combinaison »** (quand le
+  détail est complet) ; soit, si la bibliothèque est non vide, une **sélection**
+  d'une réutilisable (⇒ « hauteur seule », structure héritée affichée) avec
+  **« Détacher »** pour repasser inline. La **bibliothèque** (`/combinations`) liste
+  les réutilisables **dans l'ordre serveur** (déjà trié par usage) avec
+  suppression confirmée. Logique critique **pure et testée** (`sessions/draft.ts`,
+  `combinations-api`) ; composants couverts par `tsc` + **export Metro web**.
+
+### Écarts vs cadrage (consignés)
+
+- **Entité `Combinaison réutilisable` & `combinaison_ref` hors socle — ajoutés
+  ici, comme prévu.** 0.2/0.3 avaient **explicitement différé** l'entité et la FK
+  au lot 2.5 (cf. journaux). Ajout **purement additif** (nouvelle table + colonne
+  nullable) : aucune table/contrat socle modifié dans sa forme.
+- **`obstacleSortieSchema` gagne `combinaison_ref` (additif).** Conséquence : la
+  projection de séance (`séanceSortieSchema`) et l'**export RGPD** (1.3, qui
+  réutilise `obstacleSortieSchema`) incluent désormais `combinaison_ref` sur chaque
+  obstacle — additif, bon pour la portabilité. Fixtures de test mises à jour
+  (`account-export.test.ts`, `draft.test.ts` : `combinaison_ref: null` ajouté),
+  **aucune assertion comportementale changée**.
+- **Alignement Drizzle ↔ `shared` étendu.** `Combinaison` ajoutée (colonnes
+  d'usage exclues, cf. supra) ; l'assertion `Obstacle` couvre maintenant
+  `combinaison_ref` (nullable ⇒ optionnel via `NullToOptional`). `pnpm typecheck`
+  **et** `pnpm test` le vérifient.
+- **Bumps d'`updated_at` à `recordUsage`.** Le `$onUpdate` technique repose
+  `updated_at` à chaque `recordUsage` : `updated_at` reflète donc aussi les
+  instanciations, pas seulement les éditions de contenu. Sans incidence (le tri
+  utilise `last_used_at`, pas `updated_at`) — consigné comme détail mineur.
+
+### Points laissés ouverts (reports explicites)
+
+- **Plafond de bibliothèque → lot 4.1.** Aucune limite appliquée ici (gratuit
+  limité / premium-pro illimité, Spec §4.4) : c'est l'affaire de la **garde
+  d'entitlement** (autorité serveur). **Aucun check de `tier` dispersé** dans
+  `combinations` (même précédent que 1.1/2.1) — la capacité se construit ici, la
+  garde la composera.
+- **Continuité de benchmark sur obstacles dé-liés → lot 5.2.** Le `SET NULL`
+  pose un **coût** : un obstacle dont la réutilisable a été supprimée perd son
+  rattachement à l'identité suivie. 5.2 (analytics, « progression à combinaison
+  constante ») devra exclure / marquer les obstacles `combinaison_ref IS NULL`.
+  Ce que 5.2 **pourra exploiter** : le **lien** (`combinaison_ref`) et la
+  **stabilité d'identité** (« modification = nouvelle ») posés ici rendent le
+  benchmark possible ; reste à 5.2 d'**agréger/visualiser** (hors périmètre).
+- **« Édition » de réutilisable côté front (rename/restructure) → différée.** La
+  capacité API (`PATCH` = nouvelle) est **complète et prouvée** ; l'exposer dans
+  la bibliothèque demande une UX honnête du *fork* (l'ancienne reste) — non
+  construite ici pour éviter une UX ambiguë. La bibliothèque front v1 reste
+  **consultable + suppression**. La **création** (depuis la saisie) et la
+  **sélection** sont, elles, complètes.
+- **Usage non décrémenté.** `usage_count` est monotone : ni l'édition ni la
+  suppression d'une séance ne le baissent (c'est un compteur d'« usages
+  historiques », pas de références vivantes). Assumé pour l'anti-bloat ; à
+  rouvrir si un signal de « références actuelles » devient utile.
+- Conformes au périmètre : **aucun** benchmark/agrégat (5.2), **aucune**
+  métrique/feed (3.x), **aucun** versioning (écarté : modification = nouvelle),
+  **aucun** gating (4.1).
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Enregistrer** une réutilisable (depuis une séance et/ou directement), **scopée compte** | e2e `combinations.spec.ts` : `POST /combinations` 201, `compte_id` = compte courant, auto-nommée (« Triple oxer ») ; front « Enregistrer cette combinaison » → `obstacleToCombinaisonDto` | ✅ |
+| **Instancier** en **ne saisissant que la hauteur** : `éléments` hérités (null), `nombre_d_éléments` inline, **taux exact** (§7) | e2e : obstacle `{Combinaison, hauteur, combinaison_ref}` → `nombre_d_éléments` copié (= réutilisable), `éléments` null, `tauxCombinaison` = 4/6 ; corps avec structure + ref → 400 | ✅ |
+| **Modifier** une réutilisable **crée une nouvelle** ; l'ancienne **inchangée** | e2e : `PATCH` → `id` différent, `usage_count` 0, **ancienne intacte** en base (structure + nom), les deux coexistent ; renommage seul ⇒ nouvelle aussi | ✅ |
+| **Portée compte** : instanciable sur **plusieurs chevaux** | e2e : une réutilisable instanciée sur 2 chevaux du compte → 2 obstacles liés (DISTINCT cheval_id = 2), `usage_count` = 2 | ✅ |
+| **Liste triée par usage** (prouvé) | e2e : usages 3/1/0 → ordre `beaucoup > peu > jamais` (`usage_count DESC, last_used_at, created_at`) | ✅ |
+| **Suppression** → obstacles liés **`SET NULL`** sans casser le taux | e2e : `DELETE` réutilisable → `obstacle.combinaison_ref` = NULL, `nombre_d_elements` conservé, **taux identique** avant/après | ✅ |
+| **Autorisation** : pas d'instanciation/lecture/édition d'un **autre compte** | e2e : B instancie la ref de A → **404** (rien écrit) ; `GET` de B ne voit pas A ; `PATCH`/`DELETE` de B sur A → **404** | ✅ |
+| **Migrations additives** (table + `combinaison_ref`) **s'appliquent** sur Postgres | `drizzle-kit migrate` (0000→0004, sur base peuplée **et** from-scratch) ; e2e constate table/colonnes/usage, FK `compte` CASCADE, FK `combinaison_ref` SET NULL | ✅ |
+| **Couture inter-domaine propre** (§1) | `sessions` consomme `CombinationsService.findForAccount` + `recordUsage` (service exposé) ; jamais la table `combinaison` | ✅ |
+| Aucun type d'API dupliqué | DTO/calc de `@hpt/shared` (`Combinaison*Dto/Sortie`, `nomAutoCombinaison`, `tauxCombinaison`) ; projection front re-validée par `séanceCréerSchema` | ✅ |
+| `pnpm lint` | `biome check .` (195 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app ; alignement Combinaison + Obstacle) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **70 (shared, +16)** + **14 (api, +1 alignement)** + **85 (app : +8 draft, +4 combinations-api)** | ✅ 169/169 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** (22 routes, `/combinations` incluse) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 73 (lots 0.3→2.4) + **16 (combinations 2.5)** | ✅ 89/89 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` 0→0004 + `verify`, e2e 2.5 inclus) | ✅ |
