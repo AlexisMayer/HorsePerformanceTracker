@@ -1,6 +1,7 @@
 import type { TypeObstacleSimple } from '@hpt/shared';
 import { integer, jsonb, pgTable, uuid } from 'drizzle-orm/pg-core';
 import { champsTechniques } from './champs-techniques';
+import { combinaison } from './combinaison';
 import { obstacleTypeEnum } from './enums';
 import { seance } from './seance';
 
@@ -20,8 +21,14 @@ import { seance } from './seance';
  *   sans-schéma — un `jsonb` préserve l'ordre et reste interrogeable, là où une
  *   table fille serait prématurée ; le détail réutilisable est le lot 2.5).
  *
- * Hors périmètre 0.3 (reportés, cf. journal) : `combinaison_ref` → Combinaison
- * réutilisable (la table cible n'existe qu'au lot 2.5).
+ * **`combinaison_ref` (lot 2.5, reporté de 0.3)** : lien optionnel vers une
+ * Combinaison réutilisable instanciée. Nullable, FK en **`ON DELETE SET NULL`** :
+ * si la réutilisable est supprimée, l'obstacle **conserve** ses valeurs
+ * d'instanciation (`nombre_d_éléments` copié inline, hauteur, barres/refus) et
+ * donc son **taux** (§7, self-contained) ; il perd seulement le **lien nommé** et
+ * l'héritage des `éléments`. À l'instanciation, `nombre_d_éléments` est **copié**
+ * depuis la réutilisable (requis par la formule §7) tandis que `éléments` reste
+ * **hérité** via la ref (non dupliqué → `null` inline). Migration **additive**.
  */
 export const obstacle = pgTable('obstacle', {
   ...champsTechniques,
@@ -36,4 +43,7 @@ export const obstacle = pgTable('obstacle', {
   difficulté: integer('difficulte'),
   nombre_d_éléments: integer('nombre_d_elements'),
   éléments: jsonb('elements').$type<TypeObstacleSimple[]>(),
+  combinaison_ref: uuid('combinaison_ref').references(() => combinaison.id, {
+    onDelete: 'set null',
+  }),
 });

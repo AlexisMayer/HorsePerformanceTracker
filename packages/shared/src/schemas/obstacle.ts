@@ -12,10 +12,15 @@ import {
  * DTO d'**entrée** — un obstacle d'entraînement (Modèle §6.1).
  *
  * Les champs de combinaison sont conditionnels (`type === 'Combinaison'`),
- * validés par `superRefine` :
- *  - une combinaison EXIGE `nombre_d_éléments` (≥ 2) ;
- *  - un obstacle simple REFUSE `nombre_d_éléments` / `éléments` ;
- *  - si le détail des `éléments` est fourni, sa longueur doit correspondre.
+ * validés par `superRefine`. **Deux façons de saisir une combinaison** :
+ *  - **inline** (2.3, sans `combinaison_ref`) : EXIGE `nombre_d_éléments` (≥ 2) ;
+ *    `éléments` optionnel, mais si fourni sa longueur doit correspondre.
+ *  - **instanciée** depuis une réutilisable (2.5, avec `combinaison_ref`) :
+ *    « on ne saisit que la hauteur » (Modèle §8) → `nombre_d_éléments` et
+ *    `éléments` sont **interdits dans le corps** (le serveur **copie**
+ *    `nombre_d_éléments` depuis la réutilisable et **hérite** `éléments` via la
+ *    ref — non dupliqués).
+ * Un obstacle **simple** REFUSE les trois champs de combinaison.
  */
 export const obstacleCréerSchema = z
   .object({
@@ -27,14 +32,33 @@ export const obstacleCréerSchema = z
     difficulté: échelle1à5Schema.optional(),
     nombre_d_éléments: z.number().int().min(2).optional(),
     éléments: z.array(typeObstacleSimpleSchema).optional(),
+    combinaison_ref: z.string().uuid().optional(),
   })
   .superRefine((o, ctx) => {
     if (o.type === 'Combinaison') {
-      if (o.nombre_d_éléments === undefined) {
+      if (o.combinaison_ref !== undefined) {
+        // Instanciation : la structure vient de la réutilisable (copiée/héritée
+        // par le serveur), jamais du corps — on ne saisit que la hauteur.
+        if (o.nombre_d_éléments !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['nombre_d_éléments'],
+            message:
+              'Avec `combinaison_ref`, `nombre_d_éléments` est copié depuis la réutilisable.',
+          });
+        }
+        if (o.éléments !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['éléments'],
+            message: 'Avec `combinaison_ref`, les `éléments` sont hérités de la réutilisable.',
+          });
+        }
+      } else if (o.nombre_d_éléments === undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['nombre_d_éléments'],
-          message: 'Une combinaison exige `nombre_d_éléments`.',
+          message: 'Une combinaison exige `nombre_d_éléments` (ou une `combinaison_ref`).',
         });
       } else if (o.éléments !== undefined && o.éléments.length !== o.nombre_d_éléments) {
         ctx.addIssue({
@@ -56,6 +80,13 @@ export const obstacleCréerSchema = z
           code: z.ZodIssueCode.custom,
           path: ['éléments'],
           message: '`éléments` n’est valable que pour une combinaison.',
+        });
+      }
+      if (o.combinaison_ref !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['combinaison_ref'],
+          message: '`combinaison_ref` n’est valable que pour une combinaison.',
         });
       }
     }
@@ -82,6 +113,10 @@ export const obstacleSortieSchema = z.object({
   difficulté: z.number().nullable(),
   nombre_d_éléments: z.number().nullable(),
   éléments: z.array(typeObstacleSimpleSchema).nullable(),
+  // Lien vers la réutilisable instanciée (lot 2.5) ; `null` pour un obstacle
+  // simple, une combinaison inline, ou un obstacle dé-lié (réutilisable
+  // supprimée → `SET NULL`, valeurs et taux conservés).
+  combinaison_ref: z.string().nullable(),
 });
 
 export type ObstacleSortie = z.infer<typeof obstacleSortieSchema>;

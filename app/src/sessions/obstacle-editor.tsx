@@ -7,11 +7,20 @@ import {
 } from '@hpt/shared';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
+import { useCombinations } from '../combinations';
 import { colors, radius, spacing } from '../theme';
 import { Button, Card, Text } from '../ui';
 import { ChipGroup } from './chips';
 import { DifficultyMarker } from './difficulty-marker';
-import { clampCounter, type ObstacleDraft, obstaclePreviewRate, resizeÉléments } from './draft';
+import {
+  clampCounter,
+  type ObstacleDraft,
+  obstaclePreviewRate,
+  obstacleToCombinaisonDto,
+  resizeÉléments,
+  selectReusable,
+  unlinkReusable,
+} from './draft';
 import { HeightBar } from './height-bar';
 import { RatePreview } from './rate-preview';
 import { TapCounter } from './tap-counter';
@@ -30,10 +39,15 @@ const ÉLÉMENT_TYPE_OPTIONS = TYPES_OBSTACLE_SIMPLE.map((t) => ({ value: t, lab
 /**
  * Éditeur d'un **obstacle** (entraînement) — chip de type → hauteur → compteurs
  * `rép/barres/refus`, avec **aperçu du taux** en direct (UI/UX §6.3, Spec §3.2).
- * Le type **Combinaison** ouvre le `nombre d'éléments` (dénominateur = rép ×
- * éléments, §7) et, **au choix**, le détail des types saisi à la main — la
- * **sélection depuis une bibliothèque réutilisable est le lot 2.5**. Les fautes
- * restent **au niveau de la combinaison**.
+ *
+ * Le type **Combinaison** offre **deux voies** (Modèle §8, lot 2.5) :
+ *  - **inline** : `nombre d'éléments` (dénominateur = rép × éléments, §7) +,
+ *    au choix, le détail des types ; cette combinaison détaillée peut être
+ *    **enregistrée comme réutilisable** (« Enregistrer cette combinaison ») ;
+ *  - **instanciée** depuis la **bibliothèque** : on **sélectionne** une
+ *    réutilisable (`combinaison_ref`) et on **ne saisit que la hauteur** (+
+ *    rép/fautes) — la structure (`nombre_d_éléments`, `éléments`) est héritée.
+ * Les fautes restent **au niveau de la combinaison**.
  */
 export function ObstacleEditor({
   obstacle,
@@ -43,7 +57,14 @@ export function ObstacleEditor({
   onRemove,
 }: ObstacleEditorProps) {
   const combinaison = estCombinaison(obstacle.type);
+  const { combinaisons, create: createCombinaison } = useCombinations();
   const [showDetail, setShowDetail] = useState(obstacle.éléments.length > 0);
+
+  const linked = obstacle.combinaison_ref !== null;
+  const linkedCombo = linked
+    ? (combinaisons.find((c) => c.id === obstacle.combinaison_ref) ?? null)
+    : null;
+  const saveDto = obstacleToCombinaisonDto(obstacle);
 
   const denom = combinaison
     ? obstacle.répétitions * obstacle.nombre_d_éléments
@@ -51,10 +72,10 @@ export function ObstacleEditor({
   const basis = `sur ${denom} effort${denom > 1 ? 's' : ''}`;
 
   const setType = (type: TypeObstacle) => {
-    // Quitter une combinaison referme et oublie le détail des éléments.
+    // Quitter une combinaison referme le détail, oublie les éléments et le lien.
     if (!estCombinaison(type)) {
       setShowDetail(false);
-      onChange({ type, éléments: [] });
+      onChange({ type, éléments: [], combinaison_ref: null });
     } else {
       onChange({ type });
     }
@@ -84,6 +105,22 @@ export function ObstacleEditor({
     const éléments = [...obstacle.éléments];
     éléments[slot] = type;
     onChange({ éléments });
+  };
+
+  const handleSaveReusable = () => {
+    if (!saveDto) return;
+    // Enregistrée, puis **liée** à l'obstacle : il instancie désormais la
+    // réutilisable (détail hérité ensuite, suivi possible en benchmark 5.2).
+    createCombinaison.mutate(saveDto, {
+      onSuccess: (created) => {
+        setShowDetail(false);
+        onChange({
+          combinaison_ref: created.id,
+          nombre_d_éléments: created.nombre_d_éléments,
+          éléments: [],
+        });
+      },
+    });
   };
 
   return (
@@ -135,33 +172,80 @@ export function ObstacleEditor({
 
       {combinaison ? (
         <View style={styles.combination}>
-          <View style={styles.combinationCounter}>
-            <TapCounter
-              label="Nombre d'éléments"
-              value={obstacle.nombre_d_éléments}
-              min={2}
-              onChange={setNombreÉléments}
-            />
-          </View>
-          <Button
-            label={
-              showDetail ? 'Masquer le détail des éléments' : 'Détailler les éléments (optionnel)'
-            }
-            variant="ghost"
-            onPress={toggleDetail}
-          />
-          {showDetail
-            ? obstacle.éléments.map((élément, slot) => (
-                <ChipGroup
-                  // biome-ignore lint/suspicious/noArrayIndexKey: slots ordonnés et de taille fixe
-                  key={slot}
-                  label={`Élément ${slot + 1}`}
-                  options={ÉLÉMENT_TYPE_OPTIONS}
-                  value={élément}
-                  onChange={(type) => setÉlément(slot, type)}
+          {linked ? (
+            // Instanciée depuis une réutilisable : « on ne saisit que la hauteur ».
+            <View style={styles.linked}>
+              <Text variant="bodyStrong">
+                {linkedCombo ? linkedCombo.nom : 'Combinaison enregistrée'}
+              </Text>
+              <Text variant="caption" color="textMuted">
+                {obstacle.nombre_d_éléments} éléments — hérités de ta bibliothèque
+              </Text>
+              <Button
+                label="Détacher (saisir le détail)"
+                variant="ghost"
+                onPress={() => onChange(unlinkReusable())}
+              />
+            </View>
+          ) : (
+            <>
+              <View style={styles.combinationCounter}>
+                <TapCounter
+                  label="Nombre d'éléments"
+                  value={obstacle.nombre_d_éléments}
+                  min={2}
+                  onChange={setNombreÉléments}
                 />
-              ))
-            : null}
+              </View>
+              <Button
+                label={
+                  showDetail
+                    ? 'Masquer le détail des éléments'
+                    : 'Détailler les éléments (optionnel)'
+                }
+                variant="ghost"
+                onPress={toggleDetail}
+              />
+              {showDetail
+                ? obstacle.éléments.map((élément, slot) => (
+                    <ChipGroup
+                      // biome-ignore lint/suspicious/noArrayIndexKey: slots ordonnés et de taille fixe
+                      key={slot}
+                      label={`Élément ${slot + 1}`}
+                      options={ÉLÉMENT_TYPE_OPTIONS}
+                      value={élément}
+                      onChange={(type) => setÉlément(slot, type)}
+                    />
+                  ))
+                : null}
+
+              {saveDto ? (
+                <Button
+                  label="Enregistrer cette combinaison"
+                  variant="ghost"
+                  loading={createCombinaison.isPending}
+                  loadingLabel="Enregistrement…"
+                  onPress={handleSaveReusable}
+                />
+              ) : null}
+
+              {combinaisons.length > 0 ? (
+                <View style={styles.library}>
+                  <Text variant="caption" color="textMuted">
+                    Ou rejouer une combinaison enregistrée
+                  </Text>
+                  {combinaisons.map((c) => (
+                    <Button
+                      key={c.id}
+                      label={`${c.nom} · ${c.nombre_d_éléments} él.`}
+                      variant="secondary"
+                      onPress={() => onChange(selectReusable(c))}
+                    />
+                  ))}
+                </View>
+              ) : null}
+            </>
+          )}
         </View>
       ) : null}
 
@@ -205,5 +289,14 @@ const styles = StyleSheet.create({
   },
   combinationCounter: {
     alignItems: 'flex-start',
+  },
+  linked: {
+    gap: spacing.xs,
+  },
+  library: {
+    gap: spacing.xs,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.sm,
   },
 });

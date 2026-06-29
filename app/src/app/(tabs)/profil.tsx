@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useAuth } from '../../auth';
+import { useCombinations } from '../../combinations';
 import { useHorses } from '../../horses';
 import { colors, spacing } from '../../theme';
 import { Badge, Button, Card, Screen, Text } from '../../ui';
@@ -29,6 +30,7 @@ const TYPE_LABELS: Record<string, string> = {
 export default function ProfilScreen() {
   const { account, signOut, resendEmailVerification } = useAuth();
   const { horses } = useHorses();
+  const { combinaisons } = useCombinations();
   const router = useRouter();
   const [verificationSent, setVerificationSent] = useState(false);
   const [resending, setResending] = useState(false);
@@ -76,6 +78,28 @@ export default function ProfilScreen() {
             <View style={styles.rowLeft}>
               <Text variant="body" color="textMuted">
                 {horses.length}
+              </Text>
+              <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+            </View>
+          </View>
+        </Card>
+      </Pressable>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Mes combinaisons, ${combinaisons.length} enregistrée${combinaisons.length > 1 ? 's' : ''}`}
+        onPress={() => router.push('/combinations')}
+        style={({ pressed }) => pressed && styles.pressed}
+      >
+        <Card>
+          <View style={styles.rowBetween}>
+            <View style={styles.rowLeft}>
+              <Ionicons name="layers" size={20} color={colors.primary} />
+              <Text variant="bodyStrong">Mes combinaisons</Text>
+            </View>
+            <View style={styles.rowLeft}>
+              <Text variant="body" color="textMuted">
+                {combinaisons.length}
               </Text>
               <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
             </View>

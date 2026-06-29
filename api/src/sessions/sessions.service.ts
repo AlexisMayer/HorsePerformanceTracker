@@ -9,6 +9,7 @@ import {
 } from '@hpt/shared';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, inArray } from 'drizzle-orm';
+import { CombinationsService } from '../combinations/combinations.service';
 import { type Database, DRIZZLE } from '../db/database.module';
 import { contexte, obstacle, seance, tour } from '../db/schema';
 import { ChevalNotFoundError } from '../horses/horses.errors';
@@ -43,6 +44,15 @@ function groupBySeance<T extends { seance_id: string }>(items: T[]): Map<string,
   return map;
 }
 
+/** Refs de combinaison **distinctes** parmi des obstacles (instanciation, 2.5). */
+function uniqueRefs(obstacles: ObstacleCréerDto[] | undefined): string[] {
+  const refs = new Set<string>();
+  for (const o of obstacles ?? []) {
+    if (o.combinaison_ref !== undefined) refs.add(o.combinaison_ref);
+  }
+  return [...refs];
+}
+
 /**
  * Service de domaine **`sessions`** (lot 2.2, Architecture §3) — **gardien de
  * l'inviolabilité** : **toute** écriture de séance passe par lui, qui pose
@@ -55,12 +65,18 @@ function groupBySeance<T extends { seance_id: string }>(items: T[]): Map<string,
  * Un cheval/une séance d'un autre compte se comporte comme inexistant (404, pas
  * de fuite). Aucune métrique calculée ici : on **persiste** la provenance ;
  * l'exclusion du `déclaratif` des agrégats est l'affaire de `metrics` (3.2).
+ *
+ * **Dépend de `combinations`** (2.5) : à l'instanciation d'un obstacle
+ * Combinaison portant une `combinaison_ref`, le service valide la propriété de la
+ * ref et **copie `nombre_d_éléments`** inline via `CombinationsService` (jamais en
+ * lisant la table `combinaison`, §1), puis **enregistre l'usage** à la création.
  */
 @Injectable()
 export class SessionsService {
   constructor(
     @Inject(DRIZZLE) private readonly db: Database,
     private readonly horses: HorsesService,
+    private readonly combinations: CombinationsService,
   ) {}
 
   /**
@@ -77,9 +93,14 @@ export class SessionsService {
     // Propriété du cheval (lève ChevalNotFoundError → 404 si étranger au compte).
     await this.horses.findOne(compteId, chevalId);
 
-    // Chemin rapide : un réessai (même clé) renvoie la séance existante.
+    // Chemin rapide : un réessai (même clé) renvoie la séance existante — sans
+    // re-valider les refs ni re-compter l'usage (idempotence stricte).
     const existing = await this.findByIdempotencyKey(chevalId, dto.idempotency_key);
     if (existing) return existing;
+
+    // Instanciation (2.5) : valide chaque `combinaison_ref` du compte et récupère
+    // le `nombre_d_éléments` à copier inline (lève CombinaisonNotFoundError → 404).
+    const refToNombre = await this.resolveCombinaisonRefs(compteId, dto.obstacles);
 
     try {
       const seanceId = await this.db.transaction(async (tx) => {
@@ -95,14 +116,17 @@ export class SessionsService {
           })
           .returning({ id: seance.id });
         const id = row.id;
-        await this.insertUnits(tx, id, dto);
+        await this.insertUnits(tx, id, dto, refToNombre);
         return id;
       });
 
+      // Usage enregistré **après** une création réussie uniquement (jamais sur un
+      // rejeu idempotent ni un rollback) — tri anti-bloat, lot 2.5.
+      await this.recordCombinaisonUsage(compteId, dto.obstacles);
       return this.loadTreeById(seanceId);
     } catch (error) {
       // Course concurrente sur la même clé : la contrainte d'unicité a parlé →
-      // on renvoie la séance gagnante, toujours sans doublon.
+      // on renvoie la séance gagnante, toujours sans doublon (et sans bump usage).
       if ((error as { code?: string }).code === UNIQUE_VIOLATION) {
         const winner = await this.findByIdempotencyKey(chevalId, dto.idempotency_key);
         if (winner) return winner;
@@ -159,6 +183,11 @@ export class SessionsService {
   async update(compteId: string, seanceId: string, dto: SéanceModifierDto): Promise<SéanceSortie> {
     await this.loadOwned(compteId, seanceId);
 
+    // Instanciation à l'édition : on revalide les refs et recopie
+    // `nombre_d_éléments` (correctness), **sans** recompter l'usage — éditer une
+    // séance n'est pas une nouvelle réutilisation (cf. journal 2.5).
+    const refToNombre = await this.resolveCombinaisonRefs(compteId, dto.obstacles);
+
     await this.db.transaction(async (tx) => {
       // Remplace les unités atomiques : on purge les enfants existants puis on
       // réécrit la collection cible (aucun dérivé stocké à réconcilier).
@@ -176,7 +205,7 @@ export class SessionsService {
         })
         .where(eq(seance.id, seanceId));
 
-      await this.insertUnits(tx, seanceId, dto);
+      await this.insertUnits(tx, seanceId, dto, refToNombre);
     });
 
     return this.loadTreeById(seanceId);
@@ -198,22 +227,37 @@ export class SessionsService {
   /**
    * Écrit les **unités atomiques** d'une séance (obstacles **ou** tours selon le
    * type, contexte 0..1) dans la transaction courante. **Une seule
-   * implémentation**, partagée par la création (2.2) et l'édition (2.4).
+   * implémentation**, partagée par la création (2.2) et l'édition (2.4/2.5).
+   *
+   * `refToNombre` mappe les `combinaison_ref` validées vers leur
+   * `nombre_d_éléments` : un obstacle **instancié** (avec ref, 2.5) reçoit ce
+   * nombre **copié inline** (requis §7, calcul self-contained) et `éléments` à
+   * `null` (**hérités** via la ref, non dupliqués) ; un obstacle **inline** (sans
+   * ref) garde ses valeurs saisies.
    */
-  private async insertUnits(tx: Transaction, seanceId: string, dto: SéanceUnités): Promise<void> {
+  private async insertUnits(
+    tx: Transaction,
+    seanceId: string,
+    dto: SéanceUnités,
+    refToNombre: Map<string, number>,
+  ): Promise<void> {
     if (dto.obstacles && dto.obstacles.length > 0) {
       await tx.insert(obstacle).values(
-        dto.obstacles.map((o) => ({
-          seance_id: seanceId,
-          type: o.type,
-          hauteur: o.hauteur,
-          répétitions: o.répétitions,
-          barres: o.barres,
-          refus: o.refus,
-          difficulté: o.difficulté ?? null,
-          nombre_d_éléments: o.nombre_d_éléments ?? null,
-          éléments: o.éléments ?? null,
-        })),
+        dto.obstacles.map((o) => {
+          const ref = o.combinaison_ref ?? null;
+          return {
+            seance_id: seanceId,
+            type: o.type,
+            hauteur: o.hauteur,
+            répétitions: o.répétitions,
+            barres: o.barres,
+            refus: o.refus,
+            difficulté: o.difficulté ?? null,
+            nombre_d_éléments: ref ? (refToNombre.get(ref) ?? null) : (o.nombre_d_éléments ?? null),
+            éléments: ref ? null : (o.éléments ?? null),
+            combinaison_ref: ref,
+          };
+        }),
       );
     }
 
@@ -236,6 +280,42 @@ export class SessionsService {
         note: dto.contexte.note ?? null,
       });
     }
+  }
+
+  /**
+   * **Résout les `combinaison_ref`** des obstacles (instanciation, 2.5) : pour
+   * chaque ref distincte, valide la **propriété** via `CombinationsService`
+   * (`findForAccount` lève `CombinaisonNotFoundError` → 404 si étrangère au
+   * compte) et mappe ref → `nombre_d_éléments` (à **copier inline** sur
+   * l'obstacle, §7). Couture inter-domaine **via le service exposé** — jamais en
+   * lisant la table `combinaison` (Architecture §1).
+   */
+  private async resolveCombinaisonRefs(
+    compteId: string,
+    obstacles: ObstacleCréerDto[] | undefined,
+  ): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    const refs = uniqueRefs(obstacles);
+    for (const ref of refs) {
+      const combo = await this.combinations.findForAccount(compteId, ref);
+      map.set(ref, combo.nombre_d_éléments);
+    }
+    return map;
+  }
+
+  /**
+   * Enregistre l'**usage** des réutilisables instanciées (une occurrence par
+   * obstacle lié) via `CombinationsService.recordUsage` — alimente le tri
+   * anti-bloat (Spec §4.3). Appelé **après une création réussie** uniquement.
+   */
+  private async recordCombinaisonUsage(
+    compteId: string,
+    obstacles: ObstacleCréerDto[] | undefined,
+  ): Promise<void> {
+    const refs = (obstacles ?? [])
+      .map((o) => o.combinaison_ref)
+      .filter((r): r is string => r !== undefined);
+    await this.combinations.recordUsage(compteId, refs);
   }
 
   /**

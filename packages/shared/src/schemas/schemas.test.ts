@@ -161,6 +161,47 @@ describe('obstacleCréerSchema (champs combinaison conditionnels)', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('instancie depuis une réutilisable : combinaison_ref seul, sans structure inline', () => {
+    // « On ne saisit que la hauteur » (Modèle §8) : le serveur copie
+    // nombre_d_éléments et hérite éléments via la ref.
+    expect(
+      obstacleCréerSchema.safeParse({
+        type: 'Combinaison',
+        hauteur: 115,
+        combinaison_ref: '55555555-5555-5555-5555-555555555555',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('refuse nombre_d_éléments / éléments fournis avec une combinaison_ref (copiés/hérités)', () => {
+    expect(
+      obstacleCréerSchema.safeParse({
+        type: 'Combinaison',
+        hauteur: 115,
+        combinaison_ref: '55555555-5555-5555-5555-555555555555',
+        nombre_d_éléments: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      obstacleCréerSchema.safeParse({
+        type: 'Combinaison',
+        hauteur: 115,
+        combinaison_ref: '55555555-5555-5555-5555-555555555555',
+        éléments: ['Vertical', 'Oxer'],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('refuse combinaison_ref sur un obstacle simple', () => {
+    expect(
+      obstacleCréerSchema.safeParse({
+        type: 'Vertical',
+        hauteur: 100,
+        combinaison_ref: '55555555-5555-5555-5555-555555555555',
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('séanceCréerSchema (structure pilotée par le type)', () => {

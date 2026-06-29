@@ -9,6 +9,7 @@
  */
 export * from './champs-techniques';
 export * from './cheval';
+export * from './combinaison';
 export * from './compte';
 export * from './contexte';
 export * from './enums';

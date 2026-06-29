@@ -1,6 +1,14 @@
-import type { Cheval, Compte, Contexte, Obstacle, Séance, Tour } from '@hpt/shared';
+import type {
+  Cheval,
+  CombinaisonRéutilisable,
+  Compte,
+  Contexte,
+  Obstacle,
+  Séance,
+  Tour,
+} from '@hpt/shared';
 import { describe, expectTypeOf, it } from 'vitest';
-import type { cheval, compte, contexte, obstacle, seance, tour } from './schema';
+import type { cheval, combinaison, compte, contexte, obstacle, seance, tour } from './schema';
 
 /**
  * Alignement **Drizzle ↔ `shared`** vérifié **au niveau type** (cascade des
@@ -58,7 +66,18 @@ describe('schéma Drizzle ↔ types `@hpt/shared` (alignement au niveau type)', 
   });
 
   it('Obstacle', () => {
+    // `combinaison_ref` (lot 2.5) est nullable en base ⇒ optionnel dans le
+    // domaine (`NullToOptional`), fidèle à `Obstacle.combinaison_ref?`.
     expectTypeOf<NullToOptional<typeof obstacle.$inferSelect>>().toEqualTypeOf<Obstacle>();
+  });
+
+  it('Combinaison réutilisable', () => {
+    // `usage_count` / `last_used_at` sont des colonnes **techniques** (tri
+    // anti-bloat, lot 2.5), hors Modèle de données ⇒ exclues de l'alignement
+    // avec la forme de domaine (même posture que `idempotency_key` sur `Séance`).
+    expectTypeOf<
+      NullToOptional<Omit<typeof combinaison.$inferSelect, 'usage_count' | 'last_used_at'>>
+    >().toEqualTypeOf<CombinaisonRéutilisable>();
   });
 
   it('Tour', () => {

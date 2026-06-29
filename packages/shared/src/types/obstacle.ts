@@ -19,8 +19,16 @@ export interface Obstacle extends ChampsTechniques {
   refus: number;
   /** Marqueur de couche contexte — optionnel, JAMAIS agrégé (§1). */
   difficulté?: number;
-  /** Si Combinaison : multiplicateur du dénominateur (§7). */
+  /** Si Combinaison : multiplicateur du dénominateur (§7). Présent inline même
+   *  instancié depuis une réutilisable (copié à l'instanciation — calcul §7
+   *  self-contained, lot 2.5). */
   nombre_d_éléments?: number;
-  /** Si Combinaison : types des éléments, dans l'ordre (optionnel). */
+  /** Si Combinaison : types des éléments, dans l'ordre (optionnel ; **hérités**
+   *  via `combinaison_ref` quand l'obstacle instancie une réutilisable). */
   éléments?: TypeObstacleSimple[];
+  /** Si Combinaison : lien vers la réutilisable instanciée (Modèle §3/§8, lot
+   *  2.5). Nullable ; `ON DELETE SET NULL` si la réutilisable est supprimée —
+   *  l'obstacle garde alors ses valeurs (`nombre_d_éléments`, hauteur, taux) et
+   *  perd seulement le lien nommé + l'héritage des `éléments`. */
+  combinaison_ref?: string;
 }

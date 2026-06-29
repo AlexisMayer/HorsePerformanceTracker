@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../auth';
+import { CombinationsProvider } from '../combinations';
 import { HorsesProvider } from '../horses';
 import { colors, FONT_ASSETS } from '../theme';
 
@@ -32,8 +33,10 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <HorsesProvider>
-            <StatusBar style="dark" />
-            <RootNavigator />
+            <CombinationsProvider>
+              <StatusBar style="dark" />
+              <RootNavigator />
+            </CombinationsProvider>
           </HorsesProvider>
         </AuthProvider>
       </QueryClientProvider>
