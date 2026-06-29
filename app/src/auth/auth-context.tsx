@@ -71,7 +71,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Services créés une seule fois (le store garde l'access en mémoire).
   const servicesRef = useRef<Services | null>(null);
   if (servicesRef.current === null) {
-    const tokenStore = createTokenStore(SecureStore);
+    // Sur web, SecureStore n'existe pas → passer undefined pour utiliser le fallback mémoire
+    const backend = typeof SecureStore.isAvailable === 'function' ? SecureStore : undefined;
+    const tokenStore = createTokenStore(backend);
     const client = createApiClient({
       baseUrl: API_BASE_URL,
       tokens: tokenStore,
