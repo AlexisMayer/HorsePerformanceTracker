@@ -3,11 +3,13 @@ import {
   type ChevalModifierDto,
   type ChevalSortie,
   chevalSortieSchema,
+  type Tier,
 } from '@hpt/shared';
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, count, eq } from 'drizzle-orm';
 import { type Database, DRIZZLE } from '../db/database.module';
 import { cheval } from '../db/schema';
+import { EntitlementsService } from '../entitlements/entitlements.service';
 import { ChevalNotFoundError } from './horses.errors';
 
 /**
@@ -21,16 +23,29 @@ import { ChevalNotFoundError } from './horses.errors';
  * compte renvoie `ChevalNotFoundError` (404 sans fuite d'existence).
  *
  * Aucune dépendance HTTP ; lève des erreurs de domaine typées (Architecture §5).
- * **Aucun check de quota/tier ici** : le plafond (1 en gratuit/premium,
- * illimité en pro) est l'affaire de la garde d'entitlement (lot 4.1, autorité
- * serveur) — la capacité se construit ici, la garde la composera plus tard.
+ *
+ * **Quota de chevaux (atterri en 4.1)** : le plafond (1 en gratuit/premium,
+ * illimité en pro — Spec §8) est tranché par `EntitlementsService` (autorité
+ * serveur, §5). Le module **fournit le décompte** (`countActifs`, sur ses
+ * propres lignes) et **délègue la décision** ; aucune règle de tier n'est
+ * dispersée ici (le service ne connaît ni les forfaits ni les chiffres). Les
+ * dépendances restent orientées `horses → entitlements` (pas de cycle).
  */
 @Injectable()
 export class HorsesService {
-  constructor(@Inject(DRIZZLE) private readonly db: Database) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Database,
+    private readonly entitlements: EntitlementsService,
+  ) {}
 
-  /** Crée un cheval **lié au compte courant** (le `compte_id` vient du jeton). */
-  async create(compteId: string, dto: ChevalCréerDto): Promise<ChevalSortie> {
+  /**
+   * Crée un cheval **lié au compte courant** (le `compte_id` vient du jeton).
+   * **Enforce le quota** d'abord : le `tier` (du principal) et le décompte des
+   * chevaux **actifs** décident si un cheval de plus est permis (multi-chevaux =
+   * pro). Refus → `QuotaDépasséError` (403) avant toute écriture.
+   */
+  async create(compteId: string, tier: Tier, dto: ChevalCréerDto): Promise<ChevalSortie> {
+    this.entitlements.assertPeutCréer(tier, 'chevaux', await this.countActifs(compteId));
     const [row] = await this.db
       .insert(cheval)
       .values({
@@ -43,6 +58,21 @@ export class HorsesService {
       })
       .returning();
     return chevalSortieSchema.parse(row);
+  }
+
+  /**
+   * Décompte des chevaux **actifs** du compte — base du quota (Spec §8), pour
+   * `entitlements`. **Décompte sur l'actif (pré-câblé pour 4.3)** : aujourd'hui
+   * il n'y a pas de colonne `archivé`, donc « actif » = tous les chevaux ; quand
+   * 4.3 ajoutera l'archivage, il suffira d'ajouter `WHERE archivé = false` ici et
+   * un cheval archivé **sortira mécaniquement du quota** (Spec §9.2).
+   */
+  async countActifs(compteId: string): Promise<number> {
+    const [{ n }] = await this.db
+      .select({ n: count() })
+      .from(cheval)
+      .where(eq(cheval.compte_id, compteId));
+    return n;
   }
 
   /** Liste les chevaux **du compte courant** uniquement (ordre de création). */

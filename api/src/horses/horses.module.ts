@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PassportModule } from '@nestjs/passport';
+import { EntitlementsModule } from '../entitlements/entitlements.module';
 import { HorsesController } from './horses.controller';
 import { HorsesService } from './horses.service';
 
@@ -15,9 +16,13 @@ import { HorsesService } from './horses.service';
  * pour vérifier la propriété du cheval à chaque écriture/lecture de séance — un
  * domaine en consomme un autre via son service exposé, jamais ses tables
  * (Architecture §1).
+ *
+ * `EntitlementsModule` est importé (lot 4.1) : `HorsesService` consomme
+ * `EntitlementsService` pour **enforcer le quota de chevaux** à la création
+ * (autorité serveur, §5). Sens de dépendance `horses → entitlements`.
  */
 @Module({
-  imports: [PassportModule],
+  imports: [PassportModule, EntitlementsModule],
   controllers: [HorsesController],
   providers: [HorsesService],
   exports: [HorsesService],

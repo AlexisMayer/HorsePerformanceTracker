@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { tauxCombinaison } from '@hpt/shared';
+import { PLAFOND_COMBINAISONS_GRATUIT, tauxCombinaison } from '@hpt/shared';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -57,6 +57,23 @@ async function registerAndLogin(email: string): Promise<TestAccount> {
     .post('/auth/register')
     .send({ email, nom: 'Cavalier', password, type: 'amateur' })
     .expect(201);
+  const login = await (await http()).post('/auth/login').send({ email, password }).expect(200);
+  return { compteId: reg.body.id as string, accessToken: login.body.access_token as string };
+}
+
+/**
+ * Inscrit un compte **à un tier donné** (on pose `tier` sur Compte après
+ * l'inscription, faute d'endpoint d'upgrade avant 4.2) puis connecte → le claim
+ * d'access **porte le tier** (entitlement lu au login). Pour les scénarios pro
+ * (plusieurs chevaux) et de plafond de bibliothèque (premium/pro illimités).
+ */
+async function registerWithTier(email: string, tier: 'premium' | 'pro'): Promise<TestAccount> {
+  const password = 'motdepasse-solide';
+  const reg = await (await http())
+    .post('/auth/register')
+    .send({ email, nom: 'Cavalier', password, type: 'amateur' })
+    .expect(201);
+  await pool.query('UPDATE compte SET tier = $1 WHERE id = $2', [tier, reg.body.id]);
   const login = await (await http()).post('/auth/login').send({ email, password }).expect(200);
   return { compteId: reg.body.id as string, accessToken: login.body.access_token as string };
 }
@@ -275,7 +292,8 @@ describe('instanciation dans une séance (on ne saisit que la hauteur)', () => {
 
 describe('portée compte : une réutilisable instanciée sur plusieurs chevaux', () => {
   it('rejoue la même combinaison sur deux chevaux du compte (usage += 2)', async () => {
-    const a = await registerAndLogin('cb-scope@hpt.test');
+    // Deux chevaux sur un même compte ⇒ pro (multi-chevaux, quota 4.1).
+    const a = await registerWithTier('cb-scope@hpt.test', 'pro');
     const chevalA = await createHorse(a, 'ChevalA');
     const chevalB = await createHorse(a, 'ChevalB');
     const combo = await (await http())
@@ -551,5 +569,55 @@ describe('autorisation (isolation entre comptes)', () => {
     expect(
       await count('SELECT count(*)::text AS n FROM combinaison WHERE compte_id = $1', [a.compteId]),
     ).toBe(0);
+  });
+});
+
+describe('plafond de bibliothèque (gating 4.1 — autorité serveur, Spec §4.4/§8)', () => {
+  /** Requête de création d'une réutilisable pour `a` (à compléter par `.expect(...)`). */
+  const créer = (a: TestAccount) =>
+    request(app.getHttpServer())
+      .post('/combinations')
+      .set(auth(a))
+      .send({ nombre_d_éléments: 2, éléments: ['Vertical', 'Oxer'] });
+
+  it('gratuit : création jusqu’au plafond, au-delà REFUSÉE côté serveur (403)', async () => {
+    const a = await registerAndLogin('cb-quota-gratuit@hpt.test');
+    for (let i = 0; i < PLAFOND_COMBINAISONS_GRATUIT; i++) {
+      await créer(a).expect(201);
+    }
+    // La (plafond + 1)-ième est refusée.
+    await créer(a).expect(403);
+
+    // Refus réel : la bibliothèque reste au plafond, pas de création fantôme.
+    const list = await (await http()).get('/combinations').set(auth(a)).expect(200);
+    expect(list.body).toHaveLength(PLAFOND_COMBINAISONS_GRATUIT);
+  });
+
+  it('gratuit : « modifier = nouvelle » est aussi plafonné (pas de contournement)', async () => {
+    const a = await registerAndLogin('cb-quota-patch@hpt.test');
+    let dernier = '';
+    for (let i = 0; i < PLAFOND_COMBINAISONS_GRATUIT; i++) {
+      dernier = (await créer(a).expect(201)).body.id;
+    }
+    // Au plafond, dériver une nouvelle (PATCH) ajouterait une ligne → refusé.
+    await (await http())
+      .patch(`/combinations/${dernier}`)
+      .set(auth(a))
+      .send({ nom: 'Renommée' })
+      .expect(403);
+    const list = await (await http()).get('/combinations').set(auth(a)).expect(200);
+    expect(list.body).toHaveLength(PLAFOND_COMBINAISONS_GRATUIT);
+  });
+
+  it('premium & pro : bibliothèque illimitée (au-delà du plafond gratuit → 201)', async () => {
+    for (const tier of ['premium', 'pro'] as const) {
+      const a = await registerWithTier(`cb-quota-${tier}@hpt.test`, tier);
+      const cible = PLAFOND_COMBINAISONS_GRATUIT + 2;
+      for (let i = 0; i < cible; i++) {
+        await créer(a).expect(201);
+      }
+      const list = await (await http()).get('/combinations').set(auth(a)).expect(200);
+      expect(list.body).toHaveLength(cible);
+    }
   });
 });

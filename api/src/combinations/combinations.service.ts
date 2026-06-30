@@ -4,12 +4,14 @@ import {
   type CombinaisonSortie,
   combinaisonSortieSchema,
   nomAutoCombinaison,
+  type Tier,
   type TypeObstacleSimple,
 } from '@hpt/shared';
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { type Database, DRIZZLE } from '../db/database.module';
 import { combinaison } from '../db/schema';
+import { EntitlementsService } from '../entitlements/entitlements.service';
 import { CombinaisonInvalideError, CombinaisonNotFoundError } from './combinations.errors';
 
 /**
@@ -23,22 +25,30 @@ import { CombinaisonInvalideError, CombinaisonNotFoundError } from './combinatio
  * filtre par `compte_id` **dans le SQL** ; viser la réutilisable d'un autre
  * compte renvoie `CombinaisonNotFoundError` (404 sans fuite, cohérent 2.1/2.2).
  *
- * **Aucun plafond/garde de tier ici** : la limite (gratuit limité / premium-pro
- * illimité, Spec §4.4) est l'affaire de la garde d'entitlement (lot 4.1, autorité
- * serveur) — la capacité se construit ici, la garde la composera (même précédent
- * que 1.1/2.1, on ne disperse pas les checks de `tier`).
+ * **Plafond de bibliothèque (atterri en 4.1)** : la limite (gratuit plafonné /
+ * premium-pro illimité, Spec §4.4/§8) est tranchée par `EntitlementsService`
+ * (autorité serveur, §5). Le module **fournit le décompte** (`countForAccount`,
+ * sur ses propres lignes) et **délègue la décision** — aucun chiffre/forfait
+ * codé ici. L'enforcement porte sur **toute** addition à la bibliothèque :
+ * `create` **et** `update` (« modification = nouvelle » insère une ligne de plus,
+ * §4.3). Dépendances orientées `combinations → entitlements` (pas de cycle).
  */
 @Injectable()
 export class CombinationsService {
-  constructor(@Inject(DRIZZLE) private readonly db: Database) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Database,
+    private readonly entitlements: EntitlementsService,
+  ) {}
 
   /**
    * **Crée** une réutilisable **liée au compte courant** (depuis un détail de
-   * séance ou directement). Le `nom` est **auto-généré** s'il est absent
-   * (`nomAutoCombinaison`, Spec §4.3) ; renommage optionnel. La structure
-   * (`nombre_d_éléments` + `éléments`) est figée à la création.
+   * séance ou directement). **Enforce le plafond** d'abord (tier + décompte de la
+   * bibliothèque) → `QuotaDépasséError` (403) avant écriture si gratuit au
+   * plafond. Le `nom` est **auto-généré** s'il est absent (`nomAutoCombinaison`,
+   * Spec §4.3) ; renommage optionnel. La structure est figée à la création.
    */
-  async create(compteId: string, dto: CombinaisonCréerDto): Promise<CombinaisonSortie> {
+  async create(compteId: string, tier: Tier, dto: CombinaisonCréerDto): Promise<CombinaisonSortie> {
+    this.entitlements.assertPeutCréer(tier, 'combinaisons', await this.countForAccount(compteId));
     const nom = nomChoisi(dto.nom, dto.nombre_d_éléments, dto.éléments);
     const [row] = await this.db
       .insert(combinaison)
@@ -50,6 +60,20 @@ export class CombinationsService {
       })
       .returning();
     return combinaisonSortieSchema.parse(row);
+  }
+
+  /**
+   * Décompte des combinaisons réutilisables du compte — base du plafond de
+   * bibliothèque (Spec §4.4/§8), pour `entitlements`. Compte **toutes** les
+   * lignes du compte (« modification = nouvelle » les conserve : la bibliothèque
+   * est bien ce que le plafond limite).
+   */
+  async countForAccount(compteId: string): Promise<number> {
+    const [{ n }] = await this.db
+      .select({ n: count() })
+      .from(combinaison)
+      .where(eq(combinaison.compte_id, compteId));
+    return n;
   }
 
   /**
@@ -85,10 +109,14 @@ export class CombinationsService {
    */
   async update(
     compteId: string,
+    tier: Tier,
     id: string,
     dto: CombinaisonModifierDto,
   ): Promise<CombinaisonSortie> {
     const ancienne = await this.findOwned(compteId, id);
+    // « Modification = nouvelle » ⇒ une ligne de plus : même plafond qu'à la
+    // création. Au plafond (gratuit), éditer suppose de libérer une place d'abord.
+    this.entitlements.assertPeutCréer(tier, 'combinaisons', await this.countForAccount(compteId));
     const éléments = (dto.éléments ?? (ancienne.éléments as TypeObstacleSimple[])).slice();
     const nombre_d_éléments =
       dto.nombre_d_éléments ?? (dto.éléments ? dto.éléments.length : ancienne.nombre_d_éléments);
