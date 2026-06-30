@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PassportModule } from '@nestjs/passport';
+import { EntitlementsModule } from '../entitlements/entitlements.module';
 import { CombinationsController } from './combinations.controller';
 import { CombinationsService } from './combinations.service';
 
@@ -15,9 +16,13 @@ import { CombinationsService } from './combinations.service';
  * consomme pour **valider** une `combinaison_ref` à l'instanciation et
  * **enregistrer l'usage** — un domaine en consomme un autre via son service
  * exposé, jamais ses tables (Architecture §1).
+ *
+ * `EntitlementsModule` est importé (lot 4.1) : `CombinationsService` consomme
+ * `EntitlementsService` pour **enforcer le plafond de bibliothèque** à la
+ * création/dérivation (autorité serveur, §5). Sens : `combinations → entitlements`.
  */
 @Module({
-  imports: [PassportModule],
+  imports: [PassportModule, EntitlementsModule],
   controllers: [CombinationsController],
   providers: [CombinationsService],
   exports: [CombinationsService],

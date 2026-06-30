@@ -7,6 +7,7 @@ import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../auth';
 import { CombinationsProvider } from '../combinations';
+import { EntitlementsProvider } from '../entitlements';
 import { HorsesProvider, useHorses } from '../horses';
 import { shouldEnterOnboarding } from '../onboarding';
 import { colors, FONT_ASSETS } from '../theme';
@@ -33,12 +34,14 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <HorsesProvider>
-            <CombinationsProvider>
-              <StatusBar style="dark" />
-              <RootNavigator />
-            </CombinationsProvider>
-          </HorsesProvider>
+          <EntitlementsProvider>
+            <HorsesProvider>
+              <CombinationsProvider>
+                <StatusBar style="dark" />
+                <RootNavigator />
+              </CombinationsProvider>
+            </HorsesProvider>
+          </EntitlementsProvider>
         </AuthProvider>
       </QueryClientProvider>
     </SafeAreaProvider>

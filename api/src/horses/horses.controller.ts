@@ -38,13 +38,13 @@ import { HorsesService } from './horses.service';
 export class HorsesController {
   constructor(private readonly horses: HorsesService) {}
 
-  /** Crée un cheval lié au compte courant. */
+  /** Crée un cheval lié au compte courant (quota de tier enforcé par le service). */
   @Post()
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(chevalCréerSchema)) dto: ChevalCréerDto,
   ): Promise<ChevalSortie> {
-    return this.horses.create(user.id, dto);
+    return this.horses.create(user.id, user.tier, dto);
   }
 
   /** Liste les chevaux du compte courant. */

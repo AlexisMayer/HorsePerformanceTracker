@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthAccountModule } from './auth-account/auth-account.module';
 import { CombinationsModule } from './combinations/combinations.module';
 import { DatabaseModule } from './db/database.module';
+import { EntitlementsModule } from './entitlements/entitlements.module';
 import { FeedModule } from './feed/feed.module';
 import { HealthModule } from './health/health.module';
 import { HorsesModule } from './horses/horses.module';
@@ -14,6 +15,7 @@ import { SharingModule } from './sharing/sharing.module';
     DatabaseModule,
     HealthModule,
     AuthAccountModule,
+    EntitlementsModule,
     HorsesModule,
     CombinationsModule,
     SessionsModule,

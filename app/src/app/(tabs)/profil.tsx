@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useAuth } from '../../auth';
 import { useCombinations } from '../../combinations';
+import { useEntitlement } from '../../entitlements';
 import { useHorses } from '../../horses';
 import { colors, spacing } from '../../theme';
 import { Badge, Button, Card, Screen, Text } from '../../ui';
@@ -22,15 +23,19 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 /**
- * Onglet **Profil** (UI/UX §5) — état minimal du compte (e-mail, `tier` lu au
- * login, type) + **déconnexion**. La gestion d'abonnement, des chevaux et des
- * invités viendra avec ses lots (4.x / 2.1). Le `tier` est affiché à titre
- * indicatif — le **gating** reste l'autorité serveur (Architecture §3).
+ * Onglet **Profil** (UI/UX §5) — état minimal du compte (e-mail, `tier`, type) +
+ * **déconnexion**. Le `tier` est lu via l'**entitlement** (`GET /me/entitlement`,
+ * lot 4.1, lu au login), avec repli sur le compte tant qu'il charge. Il est
+ * affiché à titre indicatif — le **gating** reste l'autorité serveur
+ * (Architecture §3). Le grisage/paywall des fonctions payantes viendra en 4.2.
  */
 export default function ProfilScreen() {
   const { account, signOut, resendEmailVerification } = useAuth();
+  const { entitlement } = useEntitlement();
   const { horses } = useHorses();
   const { combinaisons } = useCombinations();
+  // Tier issu de l'entitlement (autorité serveur, lu au login) ; repli compte au chargement.
+  const tier = entitlement?.tier ?? account?.tier ?? null;
   const router = useRouter();
   const [verificationSent, setVerificationSent] = useState(false);
   const [resending, setResending] = useState(false);
@@ -56,7 +61,7 @@ export default function ProfilScreen() {
         </Text>
         <Text variant="h2">{account?.email ?? '—'}</Text>
         <View style={styles.badges}>
-          {account ? <Badge label={TIER_LABELS[account.tier]} tone="neutral" /> : null}
+          {tier ? <Badge label={TIER_LABELS[tier]} tone="neutral" /> : null}
           {account ? (
             <Badge label={TYPE_LABELS[account.type] ?? account.type} tone="neutral" />
           ) : null}

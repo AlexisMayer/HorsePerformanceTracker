@@ -43,13 +43,13 @@ import { CombinationsService } from './combinations.service';
 export class CombinationsController {
   constructor(private readonly combinations: CombinationsService) {}
 
-  /** Crée une réutilisable du compte courant (nom auto si absent). */
+  /** Crée une réutilisable du compte courant (nom auto si absent ; plafond enforcé). */
   @Post()
   create(
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(combinaisonCréerSchema)) dto: CombinaisonCréerDto,
   ): Promise<CombinaisonSortie> {
-    return this.combinations.create(user.id, dto);
+    return this.combinations.create(user.id, user.tier, dto);
   }
 
   /** Liste la bibliothèque du compte courant, **triée par usage** (anti-bloat). */
@@ -69,7 +69,7 @@ export class CombinationsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body(new ZodValidationPipe(combinaisonModifierSchema)) dto: CombinaisonModifierDto,
   ): Promise<CombinaisonSortie> {
-    return this.combinations.update(user.id, id, dto);
+    return this.combinations.update(user.id, user.tier, id, dto);
   }
 
   /** Supprime une réutilisable du compte ; les obstacles liés passent en SET NULL. */

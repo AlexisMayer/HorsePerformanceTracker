@@ -56,6 +56,24 @@ async function registerAndLogin(email: string): Promise<TestAccount> {
   return { compteId: reg.body.id as string, accessToken: login.body.access_token as string };
 }
 
+/**
+ * Inscrit un compte **à un tier donné** puis le connecte. Faute d'endpoint
+ * d'upgrade avant 4.2, on pose `tier` directement sur Compte juste après
+ * l'inscription ; la **connexion** émet alors un access dont le claim **porte le
+ * tier** (l'entitlement est lu au login, Spec §9.3). Sert aux scénarios
+ * multi-chevaux (pro) et de quota du lot 4.1.
+ */
+async function registerWithTier(email: string, tier: 'premium' | 'pro'): Promise<TestAccount> {
+  const password = 'motdepasse-solide';
+  const reg = await (await http())
+    .post('/auth/register')
+    .send({ email, nom: 'Cavalier', password, type: 'amateur' })
+    .expect(201);
+  await pool.query('UPDATE compte SET tier = $1 WHERE id = $2', [tier, reg.body.id]);
+  const login = await (await http()).post('/auth/login').send({ email, password }).expect(200);
+  return { compteId: reg.body.id as string, accessToken: login.body.access_token as string };
+}
+
 async function count(sql: string, params: unknown[]): Promise<number> {
   const { rows } = await pool.query<{ n: string }>(sql, params);
   return Number(rows[0].n);
@@ -165,7 +183,8 @@ describe('POST /horses (création scopée au compte)', () => {
 
 describe('GET /horses (liste du compte courant uniquement)', () => {
   it('ne renvoie que les chevaux du compte appelant', async () => {
-    const a = await registerAndLogin('list-a@hpt.test');
+    // A est **pro** : posséder 2 chevaux suppose le multi-chevaux (quota 4.1).
+    const a = await registerWithTier('list-a@hpt.test', 'pro');
     const b = await registerAndLogin('list-b@hpt.test');
 
     for (const nom of ['A1', 'A2']) {
@@ -363,7 +382,8 @@ describe('DELETE /horses/:id (purge cascade, isolation)', () => {
   });
 
   it('supprimer un cheval ne touche pas les autres chevaux du compte', async () => {
-    const a = await registerAndLogin('delete-isole@hpt.test');
+    // Compte **pro** : posséder 2 chevaux suppose le multi-chevaux (quota 4.1).
+    const a = await registerWithTier('delete-isole@hpt.test', 'pro');
     const garder = await (await http())
       .post('/horses')
       .set('Authorization', `Bearer ${a.accessToken}`)
@@ -386,5 +406,46 @@ describe('DELETE /horses/:id (purge cascade, isolation)', () => {
       .expect(200);
     expect(list.body).toHaveLength(1);
     expect(list.body[0].id).toBe(garder.body.id);
+  });
+});
+
+describe('quota de chevaux (gating 4.1 — autorité serveur, Spec §8)', () => {
+  /** Requête de création d'un cheval pour `a` (à compléter par `.expect(...)`). */
+  const créer = (a: TestAccount, nom: string) =>
+    request(app.getHttpServer())
+      .post('/horses')
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .send({ nom, niveau: 'amateur', hauteur_de_référence: 110 });
+
+  it('gratuit : 1er cheval accepté, 2e REFUSÉ côté serveur (403) — preuve DoD (b)', async () => {
+    const a = await registerAndLogin('quota-cheval-gratuit@hpt.test');
+    await créer(a, 'Premier').expect(201);
+    await créer(a, 'Deuxième').expect(403);
+
+    // Le refus est réel : aucune création fantôme, la liste reste à 1.
+    const list = await (await http())
+      .get('/horses')
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    expect(list.body).toHaveLength(1);
+  });
+
+  it('premium : reste plafonné à 1 (le multi-chevaux est réservé au pro)', async () => {
+    const a = await registerWithTier('quota-cheval-premium@hpt.test', 'premium');
+    await créer(a, 'Premier').expect(201);
+    await créer(a, 'Deuxième').expect(403);
+  });
+
+  it('pro : multi-chevaux illimité (2e et 3e acceptés)', async () => {
+    const a = await registerWithTier('quota-cheval-pro@hpt.test', 'pro');
+    await créer(a, 'Un').expect(201);
+    await créer(a, 'Deux').expect(201);
+    await créer(a, 'Trois').expect(201);
+
+    const list = await (await http())
+      .get('/horses')
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    expect(list.body).toHaveLength(3);
   });
 });

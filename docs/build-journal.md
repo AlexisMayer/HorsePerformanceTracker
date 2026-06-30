@@ -2646,3 +2646,183 @@ d'upgrade/gating/paywall (4.1/4.2), **pas** de comptes/onboarding invité (4.6),
 | CI | job `ci` (sans DB) + job `db` (inchangés ; 3.5 est app-only) | ✅ |
 
 ---
+
+## Lot 4.1 — Tiers & entitlements · 2026-06-30
+
+Ouverture de la **Phase 4 (Monétisation)**. Module **`entitlements`** (api) +
+**politique de gating** dans `shared` + tranche **`app`** (lecture de
+l'entitlement) : faire du champ `tier` (posé en 0.2/0.3 sur Compte) l'**autorité
+serveur du gating** (Architecture §3/§5). On pose la **matrice tier →
+capacités/quotas** (Spec §8), une **garde d'entitlement réutilisable**
+premium/pro, l'**atterrissage des quotas différés** (chevaux 2.1, combinaisons
+2.5), et la **lecture de l'entitlement au login** (Spec §9.3). Strictement le lot
+4.1 : **ni** Mollie/checkout/paywall/grisage (4.2), **ni** archivage (4.3), **ni**
+les fonctions payantes elles-mêmes (4.4/4.5/4.6/5.1) — ici on **fournit et
+prouve** la garde ; les lots payants l'**attacheront**.
+
+### Emplacement (décisions tranchées)
+
+- **Politique dans `shared`** : nouvelle couche `packages/shared/src/entitlements/`
+  (`entitlement.ts` + barrel + tests) — `CAPACITÉS`, `QUOTAS`,
+  `PLAFOND_COMBINAISONS_GRATUIT`, type `Entitlement`, `MATRICE_ENTITLEMENT`, et
+  fonctions pures `entitlementPourTier` / `aLaCapacité` / `quotaPour` /
+  `peutCréer`. **DTO de sortie** : `schemas/entitlement.ts`
+  (`entitlementSortieSchema`, dérivé des tuples de la politique → ne peut pas
+  diverger). Barils `index.ts` (racine + schemas) mis à jour. C'est la **5ᵉ
+  couche** de `shared` (à côté de `enums/types/schemas/calc`).
+- **Module API** : `api/src/entitlements/` (par domaine, §3) —
+  `entitlements.service` (projection + asserts), `entitlements.errors`
+  (`CapacitéRequiseError` 403, `QuotaDépasséError` 403), `require-capacite.decorator`
+  (`@RequireCapacité` + `Reflector`), `entitlement.guard` (`EntitlementGuard`,
+  réutilisable), `entitlements.controller` (`GET /me/entitlement`),
+  `entitlements.module`. Enregistré dans `app.module.ts` après `auth-account`.
+- **Enforcement branché sur l'existant** : `horses` (2.1) et `combinations` (2.5)
+  importent `EntitlementsModule` et **composent** le quota dans leur service de
+  création — aucun nouveau endpoint de quota, aucune migration (le `tier`, les
+  tables `cheval`/`combinaison` existent déjà).
+- **Tranche front** : `app/src/entitlements/` (`entitlements-api`,
+  `entitlements-context` + `useEntitlement`, barrel, test). `EntitlementsProvider`
+  monté dans `_layout.tsx` ; **Profil** affiche le tier issu de l'entitlement.
+
+### Décisions tranchées (et pourquoi)
+
+- **Matrice = traduction littérale du tableau Spec §8, donnée pure et testée
+  (Archi §2).** Cinq **capacités** gatées (`analytique_diagnostic`,
+  `bilan_augmenté`, `bilan_progression` → premium/pro ; `multi_chevaux`,
+  `comptes_invité` → pro) et deux **quotas** (`chevaux` 1/1/∞ ; `combinaisons`
+  5/∞/∞). Une capacité n'existe dans la matrice que si elle peut être **refusée** :
+  la saisie, la boucle gratuite (feed/héros/cartes) et l'historique — jamais
+  verrouillés — n'y figurent pas. **Une seule implémentation**, lue par l'app
+  (grisage 4.2) **et** l'api (garde + quota).
+- **`null` = illimité** (et non `Infinity`) : sérialisable en JSON, donc traverse
+  `GET /me/entitlement` sans perte. `peutCréer(tier, clé, countActuel)` = `quota
+  === null || countActuel < quota`.
+- **Plafond combinaisons gratuit = 5** (décision 4.1). La Spec §4.4 dit
+  « bibliothèque limitée en nombre » sans chiffre figé ; 5 est assez pour essayer,
+  assez bas pour rester un levier de conversion. **Source unique**
+  (`PLAFOND_COMBINAISONS_GRATUIT` dans `shared`) → 4.2 pourra le re-trancher / le
+  rendre paramétrable (tarifs) sans toucher l'enforcement.
+- **Source du `tier` à l'exécution = le principal (claim JWT), pas une relecture
+  DB par requête.** Le `tier` est posé sur Compte (0.3), **lu au login** (1.1) et
+  porté **signé** par l'access token (`AuthenticatedUser.tier`, déjà présent). La
+  garde **et** le quota **et** `/me/entitlement` lisent **la même** source → ce
+  que l'app affiche/dégrisera == ce que le serveur enforce (jamais d'incohérence).
+  C'est **authoritatif** (le client ne peut pas forger un tier signé) et évite un
+  aller-retour DB par appel gaté (modèle *claims-based* standard). « Lit `tier`
+  sur Compte » est satisfait via le claim issu de Compte au login (§9.3).
+- **Garde d'entitlement réutilisable** = `@RequireCapacité(cap)` (métadonnée) +
+  `EntitlementGuard` (lit la métadonnée via `Reflector`, lit `request.user.tier`,
+  tranche via `aLaCapacité`). Un handler **non annoté** passe librement (on peut
+  l'appliquer large sans bloquer le gratuit) ; un sous-tier sur un handler annoté
+  → **403** (`CapacitéRequiseError`). **Fournie + exportée + prouvée** (test
+  unitaire) ; **aucun** endpoint premium réel en 4.1 (ils naissent en
+  4.4/4.5/4.6/5.1 et l'attacheront). À utiliser **après** `JwtAccessGuard`.
+- **Enforcement de quota composé dans le service de ressource, pas en garde —
+  pour rester acyclique.** Le décompte d'une ressource appartient au module qui la
+  possède : `HorsesService.countActifs` / `CombinationsService.countForAccount`
+  lisent **leur propre** table ; ils appellent ensuite
+  `EntitlementsService.assertPeutCréer(tier, clé, count)` (décision pure, lève
+  `QuotaDépasséError`). Sens de dépendance **`horses/combinations → entitlements`**
+  uniquement. Mettre le décompte **dans** `entitlements` (qui appellerait
+  `horses`) **et** l'enforcement dans `horses` (qui appelle `entitlements`) aurait
+  créé un **cycle de modules** ; on l'évite en gardant le décompte côté
+  propriétaire. `entitlements` ne lit **aucune** table d'un autre domaine (§3) —
+  il ne porte que la **politique** et l'**erreur**. Aucune règle de tier n'est
+  dispersée (les services ne connaissent ni forfaits ni chiffres) : c'est bien la
+  **garde/le service d'entitlement** qui compose, comme annoncé par 2.1/2.5.
+- **Décompte chevaux sur l'ACTIF (pré-câblé 4.3).** `countActifs` compte
+  aujourd'hui **tous** les chevaux du compte (il n'y a pas encore de colonne
+  `archivé`) ; 4.3 ajoutera `WHERE archivé = false` **au seul** endroit nommé
+  `countActifs` → un cheval archivé **sortira mécaniquement** du quota (Spec §9.2),
+  sans toucher au gating.
+- **Plafond combinaisons enforcé sur `create` ET `update`.** « Modification =
+  nouvelle » (2.5) **insère une ligne** (l'ancienne reste) : c'est une addition à
+  la bibliothèque, donc soumise au même plafond — sinon un gratuit au plafond
+  contournerait la limite par `PATCH` répété. Au plafond, éditer suppose de
+  libérer une place d'abord (honnête, prouvé).
+- **Refus = 403 (et non 401/402).** L'utilisateur est authentifié mais son tier
+  n'ouvre pas la fonction/ressource. `publicMessage` **dit quoi faire** (passer au
+  forfait qui débloque) sans jargon → l'app (4.2) déclenchera l'upgrade dessus.
+  Erreurs **typées** (`DomainError`) traduites par le `DomainExceptionFilter`
+  global (1.1) — aucune fuite d'interne (§5).
+- **`GET /me/entitlement`** (route `/me`, sous `JwtAccessGuard`) renvoie
+  `{ tier, capacités, quotas }` **validé** par `entitlementSortieSchema`. L'app le
+  lit au login (`EntitlementsProvider`, TanStack Query activée à
+  `authenticated`, clé portée par le compte) et **affiche le tier** dans Profil
+  (repli sur le compte le temps du chargement). **Re-validation Zod au bord de
+  l'app** (le DTO n'a que scalaires/booléens, contrairement aux fiches à `Date`).
+
+### Écarts vs cadrage (consignés)
+
+- **`tier` lu depuis le principal plutôt que relu en base à chaque appel.** Le
+  cadrage dit « service d'entitlement (lit `tier` sur Compte) » ; on lit le `tier`
+  **via le claim** (issu de Compte au login, signé) pour garantir l'égalité
+  garde == quota == lecture et éviter un coût DB par requête. **Conséquence
+  assumée** : un changement de tier (upgrade 4.2, downgrade) ne prend effet
+  qu'au **prochain jeton** (≤ 15 min, ou immédiatement si 4.2 force un refresh —
+  cf. points ouverts). Sans faille : un gratuit ne peut pas s'auto-élever (claim
+  signé serveur).
+- **Enforcement composé dans le service de ressource** (et non dans une garde
+  `@UseGuards` dédiée au quota) — pour éviter un cycle de modules (cf. décision
+  ci-dessus). La **garde** reste le mécanisme des **capacités** (premium/pro) ; le
+  **quota** (qui exige un décompte propre à chaque ressource) est composé au plus
+  près de la ressource via le **service** d'entitlement. Les deux sont
+  « autorité serveur » et lisent la **même** politique `shared`.
+- **Signatures de service étendues d'un paramètre `tier`** : `HorsesService.create`
+  (`compteId, tier, dto`), `CombinationsService.create` (`compteId, tier, dto`) et
+  `.update` (`compteId, tier, id, dto`). Seuls leurs **contrôleurs** les appellent
+  (vérifié) ; `sessions` consomme `horses.findOne` / `combinations.findForAccount`
+  / `recordUsage` — **inchangés**. Aucun type d'API modifié.
+- **Tests e2e existants adaptés au quota.** Trois cas créaient **2 chevaux pour un
+  même compte gratuit** (`horses` : `list-a`, `delete-isole` ; `combinations` :
+  `cb-scope`) — désormais impossible (multi-chevaux = pro). Ces comptes passent en
+  **pro** (helper `registerWithTier`, qui pose `tier` puis se connecte → claim à
+  jour). Intention des tests **préservée** ; aucune assertion comportementale
+  retirée.
+- **Touche à `shared` (couche `entitlements` + `schemas/entitlement`) et au
+  barrel racine.** Additif : aucun contrat existant modifié. Le dual-build
+  ESM+CJS de `shared` embarque la nouvelle couche (consommée au runtime par l'api).
+
+### Points laissés ouverts (reports explicites)
+
+- **4.2 (grisage + checkout Mollie + flux d'upgrade)** : consommera
+  `capacités`/`quotas` de l'entitlement pour **griser** et déclenchera l'upgrade
+  sur un **403** (`CapacitéRequiseError`/`QuotaDépasséError`). **Contrat à
+  honorer** : après un upgrade réussi, **rafraîchir le jeton** (re-login/refresh)
+  pour que le claim `tier` — donc la garde et le quota — rejoigne l'entitlement
+  affiché. Tarifs/montants et plafond combinaisons paramétrables y sont tranchés.
+- **4.3 (archivage)** : ajoutera la colonne `archivé` et le `WHERE archivé =
+  false` dans `countActifs` → un cheval archivé sort du quota (déjà pré-câblé).
+- **4.4/4.5/4.6/5.1 (fonctions payantes)** : **attacheront** `@RequireCapacité` +
+  `EntitlementGuard` sur leurs endpoints (`bilan_progression`, `bilan_augmenté`,
+  `comptes_invité`, `analytique_diagnostic`). La garde est prête et prouvée.
+- **Parallélisme** (Roadmap) : 4.2/4.3/4.4/4.5 lançables **après 4.1** ; **4.6
+  après 4.1 + 5.1**.
+- **Fraîcheur du tier (≤ 15 min)** : staleness bornée par la durée de vie de
+  l'access (1.1), acceptée ; résolue au refresh et par le contrat 4.2 ci-dessus.
+- **Concurrence du quota** : décompte puis insertion (non transactionnel) — deux
+  créations simultanées pourraient dépasser de 1. Négligeable pour un usager seul ;
+  un verrou/transaction reste possible si nécessaire (non requis par la DoD).
+- **Garde de capacité non encore branchée sur un endpoint de prod** (aucune
+  fonction payante n'existe en 4.1) — c'est conforme : 4.1 la **fournit/prouve**.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Un endpoint premium/pro refusé à un gratuit côté serveur — (a) garde** | `entitlement.guard.spec.ts` (unitaire) : handler `@RequireCapacité('analytique_diagnostic')` → **gratuit 403**, premium/pro OK, handler non annoté libre, sans principal → 401 | ✅ |
+| **— (b) quota chevaux** : 2ᵉ cheval refusé en gratuit/premium, illimité en pro | e2e `horses.spec.ts` : gratuit 1er 201 / 2ᵉ **403** (liste reste à 1) ; premium 2ᵉ **403** ; pro 2ᵉ+3ᵉ 201 | ✅ |
+| **Quota combinaisons** : gratuit au-delà du plafond refusé ; illimité premium/pro | e2e `combinations.spec.ts` : gratuit 5 OK / 6ᵉ **403** ; `PATCH` au plafond **403** (pas de contournement) ; premium & pro 7 OK | ✅ |
+| **Matrice dans `shared`** (pure, testée, une seule implémentation) ; app+api la lisent | `entitlement.test.ts` (17 tests : fidélité §8, bornes de `peutCréer`, alignement politique↔DTO) ; api (service/guard) + app (`useEntitlement`) importent `@hpt/shared` | ✅ |
+| **Lecture de l'entitlement au login** + **tier affiché** dans Profil | e2e `entitlements.spec.ts` : `GET /me/entitlement` (gratuit caps=false quotas 1/5 ; **reflète pro après reconnexion**) ; app `entitlements-api.test.ts` (+ re-valide Zod) ; `profil.tsx` lit `useEntitlement().tier` | ✅ |
+| **Décompte chevaux sur l'actif** (pré-câblé 4.3) | `HorsesService.countActifs` (nommé/documenté ; `WHERE archivé=false` à ajouter en 4.3) | ✅ |
+| Aucun type d'API dupliqué ; Zod au bord | DTO `EntitlementSortie` de `@hpt/shared` (api + app) ; sortie validée par `entitlementSortieSchema` | ✅ |
+| Pas de débordement de périmètre | **0** Mollie/checkout/paywall/grisage (4.2), **0** archivage (4.3), **0** fonction payante (4.4+) ; garde fournie, non branchée sur un endpoint prod | ✅ |
+| `pnpm lint` | `biome check .` (295 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **149 (shared, +17)** + **18 (api, +4 garde)** + **162 (app, +2 entitlements-api)** | ✅ 329/329 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — **118** (+3 chevaux quota, +3 combinaisons plafond, +4 `entitlements`) | ✅ 118/118 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`) — **aucune migration** en 4.1 | ✅ |
+
+---
