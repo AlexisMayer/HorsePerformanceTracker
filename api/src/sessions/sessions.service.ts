@@ -1,6 +1,9 @@
 import {
   type ContexteCréerDto,
+  type HistoriqueQuery,
   type ObstacleCréerDto,
+  type PageHistorique,
+  pageHistoriqueSchema,
   type SéanceCréerDto,
   type SéanceModifierDto,
   type SéanceSortie,
@@ -148,6 +151,50 @@ export class SessionsService {
       .where(eq(seance.cheval_id, chevalId))
       .orderBy(seance.date);
     return this.assembleTrees(rows);
+  }
+
+  /**
+   * **Historique paginé** d'un cheval **du compte courant** (lot 3.4, UI/UX §6.4)
+   * — séances **récent → ancien**, par tranches (curseur `before` + `limit`),
+   * pour l'**onglet Historique**. C'est le **seul** ajout backend du lot : une
+   * **liste paginée** manquait au service `sessions` (`listForHorse` renvoie
+   * **tout**, inchangé). Surface app **sans module dédié** (Architecture §3/§4) :
+   * on **pagine** ici des **séances brutes** (mêmes `SéanceSortie` que 2.2) ; la
+   * **composition** (faits objectifs via `shared`, groupement par mois, badges de
+   * bilan) et la **ré-ouverture** du bilan simple (via `sharing`, 3.3) sont faites
+   * **côté app**.
+   *
+   * Pagination **identique au fil** (3.1) : curseur sur la `date` métier (séances
+   * strictement plus anciennes que `before`), plafonné à `limit`. 404 si le cheval
+   * est étranger au compte (levé par `listForHorse` → `horses`).
+   */
+  async listHistory(
+    compteId: string,
+    chevalId: string,
+    query: HistoriqueQuery,
+  ): Promise<PageHistorique> {
+    // Lecture via le chemin possédé (scope compte + propriété du cheval, 404 sans
+    // fuite). Comme le fil 3.1, on lit l'historique puis on tranche l'affichage —
+    // aucun dérivé n'est calculé ici (la composition est côté app).
+    const séances = await this.listForHorse(compteId, chevalId);
+
+    // Récent → ancien, puis curseur simple sur la date (strictement plus anciennes
+    // que `before`), plafonné à `limit` séances.
+    const ordonnées = [...séances].sort((a, b) => b.date.getTime() - a.date.getTime());
+    const borne = query.before ? new Date(query.before).getTime() : null;
+    const éligibles =
+      borne === null ? ordonnées : ordonnées.filter((s) => s.date.getTime() < borne);
+    const page = éligibles.slice(0, query.limit);
+    const hasMore = éligibles.length > page.length;
+    const nextBefore = hasMore ? (page[page.length - 1]?.date.toISOString() ?? null) : null;
+
+    // Validation/strip au bord (Architecture §5) : la forme sortante est garantie.
+    return pageHistoriqueSchema.parse({
+      cheval_id: chevalId,
+      séances: page,
+      next_before: nextBefore,
+      has_more: hasMore,
+    } satisfies PageHistorique);
   }
 
   /**

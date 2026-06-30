@@ -6,6 +6,7 @@ export * from './combinaison';
 export * from './compte';
 export * from './contexte';
 export * from './feed';
+export * from './historique';
 export * from './metrics';
 export * from './obstacle';
 export * from './referentiel';
