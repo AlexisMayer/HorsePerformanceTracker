@@ -2312,3 +2312,157 @@ comptes** (gratuit inclus). `sharing` est une surface de **lecture/composition**
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 3.3 inclus) | ✅ |
 
 ---
+
+## Lot 3.4 — Historique · 2026-06-30
+
+Quatrième morceau de la **Phase 3 (Restitution)**. **Surface app `history`** :
+l'onglet **Historique** — les **séances passées** d'un cheval, **groupées par
+mois**, avec **faits objectifs** (hauteur, sans-faute/fautes ; **Plat =
+régularité**) et **badges de bilan** (`✓ simple` ; `✦ augmenté` **quand
+présent**), et la **ré-ouverture** du **bilan de séance simple** (la carte de
+3.3). Conformément à l'Architecture §3/§4, `history` est une **surface app _sans
+module backend dédié_** : elle **lit les endpoints existants** de `sessions`
+(séances passées) et de `sharing` (`GET /sessions/:id/card`, 3.3). Le **seul**
+ajout backend est une **liste paginée** des séances passées — elle manquait au
+service `sessions`. Strictement le lot 3.4 : **pas** de bilan augmenté IA (4.5,
+seul le **slot `✦`** est câblé, vide), **pas** de bilan de progression PDF (4.4),
+**pas** de **nouvelle** UX d'édition/suppression (2.4, au plus un **renvoi**).
+
+### Emplacement (décisions tranchées)
+
+- **`shared` (DTO, Zod)** — `schemas/historique.ts` : `pageHistoriqueSchema`
+  (page de **séances brutes** `séanceSortieSchema` **réutilisé** + curseur
+  `next_before`/`has_more`) et `historiqueQuerySchema` (`before` ISO + `limit`
+  1..50, défaut 20). **Aucune forme dupliquée** (Architecture §2) : la page
+  n'invente rien, elle réutilise la projection de séance de 2.2 ; bornes de
+  pagination **identiques au fil** (3.1).
+- **`api/src/sessions/`** — **pas de nouveau module** (consigne) : on **étend**
+  `sessions`. `sessions.service.ts` gagne `listHistory(compteId, chevalId,
+  query)` (pagine l'historique possédé) ; `sessions.controller.ts` gagne
+  `GET /horses/:id/sessions/history` (garde JWT, `:id` en `ParseUUIDPipe`, query
+  Zod). Le `GET /horses/:id/sessions` **brut** de 2.2 reste **inchangé**.
+- **`app/src/history/`** — `history-api.ts`, `use-history.ts` (`useInfiniteQuery`,
+  pagination), `history-format.ts` (helpers **purs** testés : `faitsDeSéance`,
+  `groupByMonth`, `formatMonthLabel`/`formatHistoryDate`, `badgesBilan`),
+  `history-entry-card.tsx` (carte de séance). L'écran `app/(tabs)/historique.tsx`
+  passe du placeholder à la **liste défilante par mois** (`SectionList`) ; l'écran
+  `app/src/app/sessions/[id]/card.tsx` **rouvre** le bilan simple.
+
+### Décisions tranchées (et pourquoi)
+
+- **`history` lit les endpoints `sessions`/`sharing`, sans module backend
+  (Architecture §3/§4).** Une surface app n'a pas de domaine propre : le backend
+  ne fait que **paginer** des séances brutes ; **toute la composition de la vue**
+  (faits objectifs via `faitsSéance` de `shared`, **groupement par mois**, badges)
+  est **côté app**. C'est exactement ce qui distingue une **surface** d'un
+  **module** (le feed 3.1 / le sharing 3.3 sont des modules : ils composent
+  côté api). La **ré-ouverture** d'un bilan réutilise **tel quel**
+  `GET /sessions/:id/card` (3.3) — composition **sans état**, rejouable pour
+  n'importe quelle séance passée (anticipé au journal 3.3).
+- **Endpoint de liste paginée ajouté « au strict nécessaire » — et pourquoi.**
+  L'onglet **défile** des séances (UI/UX §6.4) ; or `GET /horses/:id/sessions`
+  (2.2) renvoie **tout**, non paginé. Plutôt que de changer ce contrat (utilisé
+  par l'e2e 2.2, lecture brute) ou de tout charger côté app, on **ajoute** une
+  route **dédiée** `GET …/sessions/history` à **curseur** (`before` + `limit`),
+  **calquée sur le fil** (3.1) pour un défilement cohérent. **Pas de module
+  `history`**, **pas d'élargissement** : la route ne fait que **paginer** des
+  `SéanceSortie` (mêmes DTO) ; `listHistory` réutilise `listForHorse` (scope
+  compte + propriété → 404 sans fuite), trie **récent → ancien**, tranche par
+  curseur. Surface **identique au fil**, sans dérivé calculé côté api.
+- **Groupement par mois = présentation côté app, sur la liste aplatie.**
+  `groupByMonth` regroupe les **séries consécutives** par mois en **préservant**
+  l'ordre reçu (récent → ancien). Comme on regroupe la **liste aplatie complète**
+  à chaque rendu, un mois **à cheval sur deux pages** reste **une seule** section
+  (prouvé en unitaire). Libellés `MARS 2026` / `12/03` construits **sans `Intl`**
+  (déterministes en test et à l'affichage, quel que soit le moteur JS). Un **Plat**
+  (0 franchissement) ⇒ `faitsDeSéance` renvoie `null` ⇒ carte de **régularité**
+  (Modèle §3, UI/UX §6.4).
+- **Câblage conditionnel du slot `✦`, prêt pour 4.5 — pas une valeur en dur.**
+  Les badges d'une carte sont décidés par la fonction **pure** `badgesBilan(augmentéDisponible?)`
+  : **`✓ simple` toujours** (ré-ouvrable via 3.3), **`✦ augmenté` seulement si**
+  `augmentéDisponible`. En 3.4 **aucune source** de bilan augmenté n'existe (le
+  module `ai-bilan` est le lot **4.5**) : l'écran **ne fournit jamais** le
+  paramètre, donc le `✦` **n'apparaît jamais** — non par une constante `false`
+  baignée dans l'UI, mais par **absence de donnée**. Le **conditionnel** est
+  prouvé des **deux côtés** (`badgesBilan(true)` ⇒ `['simple','augmenté']`, sinon
+  `['simple']`). En 4.5, l'historique **lira `ai-bilan`** et passera `true` quand
+  un bilan existe — **sans toucher** à ce conditionnel.
+- **Lecture + ré-ouverture uniquement ; renvoi (pas réimplémentation) vers 2.4.**
+  La carte rouverte (`sessions/[id]/card.tsx`) réutilise **tels quels**
+  `useShareCard` + `BilanCard` (3.3) ; elle porte `[ Partager ]` (réutilisé) et un
+  **renvoi discret** « Modifier la séance » → `/sessions/[id]/edit` (l'écran de
+  2.4, **inchangé**). Aucune nouvelle UX d'édition/suppression n'est créée ici ;
+  c'est le **point d'entrée naturel** autorisé par la consigne.
+- **Cohérence après suppression = par construction (2.4).** L'historique est une
+  **lecture** : rien n'est mis en cache d'agrégat. Le serveur relit l'historique
+  courant à chaque page ; une séance supprimée (`DELETE /sessions/:id`, 2.4)
+  **disparaît** mécaniquement (prouvé e2e : suppression ⇒ l'id n'est plus dans la
+  page, la séance gardée reste).
+- **Gratuit, jamais verrouillé (Spec §8).** L'historique conservé est gratuit et
+  illimité : la route ne porte **que** la garde JWT (aucun entitlement) ; l'UI ne
+  grise rien. Le gating (4.1) ne touche pas cette surface.
+
+### Écarts vs cadrage (consignés)
+
+- **Faits objectifs composés côté app (pas côté api).** Contrairement au feed
+  (module, qui renvoie `EntréeFeed` avec `faits` calculés côté api), l'historique
+  est une **surface** : l'endpoint renvoie des **séances brutes** et l'app dérive
+  les faits via `faitsSéance` de `shared`. Conséquence assumée : un **petit mapping
+  de glue** `ObstacleSortie → ObstacleFranchissement` est repris côté app (miroir
+  de celui du feed/sharing/metrics côté api) — **glue**, pas calcul (le calcul
+  reste **une seule** implémentation dans `shared`, Architecture §2).
+- **Route `GET /horses/:id/sessions/history`** (sous-vue de `sessions`, pas
+  `…/history`) : garde la **pagination dans le périmètre de `sessions`** et
+  renforce « pas de module `history` ». Suffixe **anglais** (`history`) comme
+  `feed`/`metrics`/`card` ; type **français** (`PageHistorique`).
+- **Tests app = logique pure (Node), pas de rendu RN** (cohérent 1.4→3.3). La DoD
+  « parcourir / Plat = régularité / câblage `✦` » est prouvée par les helpers
+  **purs** (`history-format.test` : faits, groupement par mois, `badgesBilan`) +
+  la surface (`history-api.test`). Le `tsc` couvre les écrans (carte, liste) ; un
+  **export Metro web réel** bundle les **23 routes** (dont
+  `/sessions/[id]/card`) sans erreur. L'e2e api (`historique.spec.ts`) prouve
+  pagination, ordre, autorisation et **cohérence après suppression**.
+
+### Points laissés ouverts (reports explicites)
+
+- **Le badge `✦` se remplira en 4.5.** Le slot est **câblé** (`badgesBilan` +
+  prop `augmentéDisponible`) mais **vide** : le module `ai-bilan` (génération
+  Mistral, persistance, badge premium/pro) le **sourcera** — l'historique passera
+  `true` quand un bilan augmenté existe pour la séance. Aucun appel IA, aucune
+  persistance amorcée ici (Spec §8 : trois objets distincts).
+- **L'historique sera lu par le compte invité en 4.6.** La **coquille invité**
+  (lecture seule, UI/UX §5/§6.7) consultera les **mêmes** séances passées et
+  bilans **simples** (sans `✦`, sans sélecteur multi-chevaux). La surface
+  actuelle (lecture + ré-ouverture, gratuite) est compatible **par construction**
+  — restera à brancher la lecture invité et le bandeau « lecture seule ».
+- **Pagination — mêmes affinements que le fil (3.1).** (a) Curseur par **date** :
+  une collision à la milliseconde près pourrait, au bord d'une page, sauter une
+  entrée (improbable, mono-utilisateur). (b) **Recalcul de l'historique complet à
+  chaque page** (`listForHorse`) : correct et simple à l'échelle v1 ; un calcul
+  incrémental/paginé en SQL sera utile si un cheval accumule des centaines de
+  séances.
+- **Bilan de progression (4.4)** — rapport **multi-séances** (PDF/lien, curation
+  de période) : non amorcé. L'historique **donne accès** aux bilans (Spec §1), il
+  ne **cure** pas de période.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Parcourir les séances passées** d'un cheval (groupées par mois, faits objectifs, **Plat = régularité**) | `history-format.test` : `groupByMonth` (sections `MARS 2026`, ordre récent → ancien, mois à cheval sur 2 pages = 1 section), `faitsDeSéance` (obstacles ⇒ faits ; **Plat ⇒ null = régularité**) ; e2e `historique.spec` : page récent → ancien, séances brutes (faits dérivables) | ✅ |
+| **Rouvrir un bilan simple** (`✓`) depuis une séance (carte 3.3) | carte tappable ⇒ `/sessions/[id]/card` ; écran réutilise `useShareCard` + `BilanCard` (**même** `GET /sessions/:id/card`, 3.3) ; export Metro : route `/sessions/[id]/card` bundlée | ✅ |
+| **`✦` affiché uniquement si un bilan augmenté existe** — donc **absent en 3.4** (câblage conditionnel) | `history-format.test` : `badgesBilan()`/`badgesBilan(false)` ⇒ `['simple']`, `badgesBilan(true)` ⇒ `['simple','augmenté']` ; l'écran **ne passe jamais** `augmentéDisponible` (aucune source `ai-bilan`) ⇒ `✦` jamais rendu | ✅ |
+| **Cohérence après suppression** (2.4) : une séance supprimée disparaît | e2e `historique.spec` : `DELETE /sessions/:id` ⇒ l'id **disparaît** de l'historique, la séance gardée reste | ✅ |
+| **État vide = invitation** ; accessibilité terrain (≥ 44 px, AA+, chiffres tabulaires) | écran : `EmptyState` (« Tes séances s'archivent ici… ») + variantes chargement/erreur/aucun-cheval ; carte = `Pressable` plein (cible large), `StatText` **tabulaire**, libellés accessibles, laiton **non** détourné (`✦` en `secondary`, jamais en célébration) | ✅ |
+| **Surface sans module dédié** : lecture via `sessions`/`sharing` | `listHistory` ajouté au **service `sessions`** (pas de module `history`) ; composition (faits/mois/badges) **côté app** ; ré-ouverture via l'endpoint `sharing` existant | ✅ |
+| **Liste paginée** au strict nécessaire (curseur `before` + `limit`) | e2e `historique.spec` : `?limit=2` ⇒ 2 plus récentes + `has_more` + `next_before` ; `?before=curseur` ⇒ page suivante, fin de fil | ✅ |
+| **Autorisation** : historique d'un cheval d'un **autre compte** refusé ; non authentifié | e2e : B `GET …/sessions/history` sur le cheval de A → **404** ; sans jeton → **401** | ✅ |
+| Aucun type d'API dupliqué | DTO de `@hpt/shared` (`PageHistorique` **réutilise** `séanceSortieSchema` ; `HistoriqueQuery`) ; faits via `faitsSéance` (`shared`) ; carte via `CarteBilan` (3.3) | ✅ |
+| `pnpm lint` | `biome check .` (264 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **132 (shared, +8)** + 14 (api) + **131 (app : +11 history-format, +3 history-api)** | ✅ 277/277 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** (23 routes, `/sessions/[id]/card` incluse) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 103 (lots 0.3→3.3) + **5 (historique 3.4)** | ✅ 108/108 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 3.4 inclus) | ✅ |
+
+---

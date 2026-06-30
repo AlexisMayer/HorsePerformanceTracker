@@ -1,4 +1,7 @@
 import {
+  type HistoriqueQuery,
+  historiqueQuerySchema,
+  type PageHistorique,
   type SéanceCréerDto,
   type SéanceModifierDto,
   type SéanceSortie,
@@ -15,6 +18,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { type AuthenticatedUser, CurrentUser } from '../auth-account/current-user.decorator';
@@ -64,6 +68,22 @@ export class SessionsController {
     @Param('id', ParseUUIDPipe) chevalId: string,
   ): Promise<SéanceSortie[]> {
     return this.sessions.listForHorse(user.id, chevalId);
+  }
+
+  /**
+   * **Historique paginé** des séances passées d'un cheval du compte courant
+   * (lot 3.4, UI/UX §6.4) — récent → ancien, curseur `before` + `limit`. Sert
+   * l'**onglet Historique** (surface app sans module dédié : la composition est
+   * côté app). Distinct de `GET …/sessions` (liste brute non paginée de 2.2,
+   * inchangée). Query validée par `historiqueQuerySchema` ; 404 si cheval étranger.
+   */
+  @Get('horses/:id/sessions/history')
+  listHistory(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) chevalId: string,
+    @Query(new ZodValidationPipe(historiqueQuerySchema)) query: HistoriqueQuery,
+  ): Promise<PageHistorique> {
+    return this.sessions.listHistory(user.id, chevalId, query);
   }
 
   /** Détail d'une séance du compte courant (404 sinon, sans fuite d'existence). */
