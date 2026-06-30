@@ -7,7 +7,8 @@ import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../auth';
 import { CombinationsProvider } from '../combinations';
-import { HorsesProvider } from '../horses';
+import { HorsesProvider, useHorses } from '../horses';
+import { shouldEnterOnboarding } from '../onboarding';
 import { colors, FONT_ASSETS } from '../theme';
 
 const queryClient = new QueryClient();
@@ -46,18 +47,38 @@ export default function RootLayout() {
 
 function RootNavigator() {
   const { status } = useAuth();
+  const { horses, isLoading: horsesLoading } = useHorses();
   const segments = useSegments();
   const router = useRouter();
 
   useEffect(() => {
     if (status === 'loading') return;
     const inAuthGroup = segments[0] === '(auth)';
-    if (status === 'unauthenticated' && !inAuthGroup) {
-      router.replace('/login');
-    } else if (status === 'authenticated' && inAuthGroup) {
-      router.replace('/');
+    const inOnboarding = segments[0] === 'onboarding';
+
+    if (status === 'unauthenticated') {
+      if (!inAuthGroup) router.replace('/login');
+      return;
     }
-  }, [status, segments, router]);
+    // Authentifié dans le groupe d'auth → rejoindre l'app.
+    if (inAuthGroup) {
+      router.replace('/');
+      return;
+    }
+    // Nouvel utilisateur (aucun cheval) → tunnel d'onboarding : on en sort avec une
+    // récompense déjà vue (Spec §2), jamais sur un feed vide. On ne force jamais la
+    // *sortie* du tunnel (l'utilisateur le termine en atterrissant sur le feed).
+    if (
+      shouldEnterOnboarding({
+        authenticated: true,
+        horsesLoading,
+        horsesCount: horses.length,
+        inOnboarding,
+      })
+    ) {
+      router.replace('/onboarding');
+    }
+  }, [status, segments, router, horsesLoading, horses.length]);
 
   return (
     <>

@@ -2466,3 +2466,183 @@ seul le **slot `✦`** est câblé, vide), **pas** de bilan de progression PDF (
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 3.4 inclus) | ✅ |
 
 ---
+
+## Lot 3.5 — Onboarding · 2026-06-30
+
+Cinquième morceau de la **Phase 3 (Restitution)**. **Surface app `onboarding`** :
+le **tunnel d'accueil** — **bifurcation** Cavalier/Coach, **cheval minimal**,
+**ligne de départ déclarative**, **1re séance guidée**, puis **atterrissage sur
+le feed** (3.1) + **héros** (3.2). Principe directeur (Spec §2) : on **sort avec
+une récompense déjà vue**, jamais avec seulement des champs remplis. Conformément
+à l'Architecture §3/§4, `onboarding` est une **surface app _sans module backend
+dédié_** : elle **orchestre** `horses` (2.1) et `sessions` (2.2/2.3) et atterrit
+sur les surfaces livrées `feed`/`metrics`. Strictement le lot 3.5 : **pas** le
+générateur réel de bilan de progression (4.4, ici **aperçu démo**), **pas**
+d'upgrade/gating/paywall (4.1/4.2), **pas** de comptes/onboarding invité (4.6),
+**pas** de reconstruction du feed/héros/saisie (réutilisés).
+
+### Emplacement (décisions tranchées)
+
+- **`app/src/onboarding/`** — la surface, découpée logique pure ⁄ composants
+  (même posture que 1.4→3.4 : RN+Vitest fragile au rendu) :
+  - **pur (`.ts`, testé Vitest)** : `onboarding-flow.ts` (machine d'étapes :
+    chemins, `nextStep`/`prevStep`, `progress`, `canGoBack`, **et la décision de
+    garde `shouldEnterOnboarding`**), `starting-line.ts` (brouillon + **DTO
+    `déclaratif`** de la ligne de départ, via `draftToCreateDto` de 2.3),
+    `bilan-demo.ts` (**données de démo** du bilan coach + libellé accessible) ;
+  - **composants (`.tsx`, couverts `tsc` + export Metro)** : `bifurcation-step`,
+    `bilan-demo-card`, `horse-step`, `starting-line-step`, `guided-session-step`,
+    `onboarding-progress`, le hook d'état `use-onboarding`, et le barrel.
+- **Route** : `app/src/app/onboarding.tsx` (`/onboarding`), écran-**wizard** unique
+  qui pilote `use-onboarding` et rend l'étape courante (pas de sous-routes : l'état
+  du tunnel — chemin, cheval créé — reste en mémoire, sans passer de params).
+- **Garde de navigation** : `app/src/app/_layout.tsx` (`RootNavigator`) étendu —
+  un **authentifié sans cheval** est redirigé vers `/onboarding` (décision pure
+  `shouldEnterOnboarding`). **Zéro** changement `shared`/`api`/DB.
+
+### Décisions tranchées (et pourquoi)
+
+- **Tunnel = surface app, aucun module backend, aucun endpoint nouveau
+  (Architecture §3/§4).** Le tunnel **n'écrit rien lui-même** : il appelle les
+  services existants. Le cheval passe par `horses` (2.1, `POST /horses`) ; la
+  ligne de départ **et** la 1re séance passent par `sessions` (2.2,
+  `POST /horses/:id/sessions`). Le besoin d'orchestration est **entièrement
+  satisfait par les routes livrées** — donc, conformément à la consigne (« aucun
+  endpoint nouveau sauf strict nécessaire »), **aucun** n'a été ajouté. C'est ce
+  qui distingue une **surface** (`onboarding`, `history`) d'un **module** (`feed`,
+  `sharing`) : la composition reste côté app, le backend ne fait que ce qu'il sait
+  déjà faire.
+- **Pose de la provenance `déclaratif` sur la ligne de départ via `sessions`
+  (Spec §2.4, Modèle §2).** La « question de référence » devient une **séance
+  `déclaratif`** : un **franchissement propre unique** à la hauteur déclarée
+  (obstacle simple, 1 répétition, 0 faute → taux 100 %). `buildStartingLineDto`
+  **réutilise `draftToCreateDto(draft, 'déclaratif')`** de la saisie 2.3 — la
+  provenance est un **paramètre déjà supporté** (2.2 accepte `déclaratif` depuis
+  l'origine, « le flux qui s'en sert est 3.5 »), **aucun contrat dupliqué**. La
+  ligne **nourrit le feed** (entrée marquée « Antérieure à l'app » par le
+  `provenanceMarqueur` de 3.1) **mais reste exclue des dérivés** (`détecteJalons`
+  et `hauteurMaîtrisée` filtrent `live` en amont, 3.1/3.2) : prouvé ici par un
+  test qui injecte la ligne (130 cm) **au-dessus** d'un record `live` (110 cm) et
+  vérifie que le record **reste 110**, qu'**aucun jalon** ne s'attache à la ligne,
+  et que la maîtrisée **ne la compte pas**.
+- **Enregistrement résilient réutilisé pour la ligne de départ.** La ligne de
+  départ part par **`submitSession`** (2.3) : **idempotence + réessai** sur
+  coupure passagère → pas de doublon (le serveur dédoublonne sur
+  `(cheval_id, idempotency_key)`). Le bouton est désactivé pendant l'envoi (une
+  ligne, une clé). Rien de spécifique à inventer.
+- **1re séance guidée = variante _plus explicative_ de la saisie 2.3, pas une
+  refonte.** `guided-session-step` **réutilise** `useSessionCapture` (brouillon,
+  persistance, idempotence, réessai) et les **mêmes éditeurs** (`ChipGroup`,
+  `ObstacleEditor`/`TourEditor`, `canSave`) ; il ajoute des **explications
+  pas-à-pas** (« 1 · type », « 2 · obstacles », « 3 · enregistrer ») et **retire**
+  la duplication « séance précédente » (il n'y en a pas — on ne propose pas de
+  reprendre la ligne **déclarative** comme base). La séance créée est **`live` et
+  duplicable** : la boucle nominale (2.3/3.x) la reprendra telle quelle. À
+  l'enregistrement, on **atterrit directement sur le feed** (pas la carte 3.3,
+  réservée à la boucle nominale) ; « Plus tard » mène **aussi** au feed — la ligne
+  de départ y figure déjà, donc on ne sort **jamais** les mains vides.
+- **Atterrissage sur le _vrai_ feed (3.1 + héros 3.2), pas un écran de récompense
+  reconstruit.** La fin du tunnel fait `router.replace('/')` : l'utilisateur tombe
+  sur les surfaces **livrées**, qui affichent déjà sa ligne de départ (repère) et,
+  s'il a logué la 1re séance `live`, son **premier record** en vitrine (3.2) + le
+  **jalon** injecté (3.1). « Réutiliser, pas refaire » jusqu'à la récompense — et
+  c'est la preuve la plus forte de la DoD (« récompense déjà vue »).
+- **Aperçu de bilan coach = démo statique, découplé de 4.4 — et pourquoi.** Le
+  chemin coach insère **avant toute saisie** un `BilanDemoCard` : un **bilan de
+  progression** (Spec §6 : niveau démontré, **régularité**, trajectoire) rendu sur
+  **données figées** (`BILAN_DEMO`) et **explicitement marqué « Aperçu · exemple »**.
+  **Consigne respectée** : ce n'est **pas** le générateur réel (4.4) ; aucune
+  dépendance à un endpoint, aucun calcul. Pourquoi statique : le levier de
+  conversion, c'est **montrer le livrable** tôt (Spec §2.3) ; le **vrai** bilan
+  (couche objective + régularité) se construira en 4.4, sans toucher à cet aperçu.
+  La carte **réutilise** la signature barre (`BarMotif`, 3.1) et le **laiton**
+  (record, réservé à la célébration) — cohérence visuelle, zéro nouvelle primitive.
+- **Bifurcation : choix explicite, pré-orienté par le `type` de compte.** L'écran
+  de bifurcation (Spec §2.1, UI/UX §6.1) propose **Cavalier** (chemin court) /
+  **Coach** (config + aperçu) ; le chemin correspondant au `type` choisi à
+  l'inscription (1.4) porte un discret « Recommandé ». Le choix **n'écrit pas** le
+  `type` du compte (déjà posé au register, éditable au Profil) : il **n'oriente
+  que le tunnel**. Les deux chemins **convergent** ensuite (cheval → ligne →
+  séance) : un seul jeu de composants, le coach ayant simplement l'étape démo en
+  plus.
+- **Garde « 0 cheval → onboarding » comme décision _pure_ et testée.** Plutôt que
+  de disperser la condition dans l'UI, `shouldEnterOnboarding({authenticated,
+  horsesLoading, horsesCount, inOnboarding})` est une fonction **pure** (testée :
+  matrice complète) que `RootNavigator` applique — même esprit que `TABS`
+  (source unique testée, 1.4). On **n'entre** que liste **résolue** (`!loading`,
+  pas de clignotement) **et vide**, et **jamais** si on y est déjà (pas de
+  boucle) ; on ne **force jamais la sortie** du tunnel (l'utilisateur le termine
+  en atterrissant sur le feed) — un cheval créé en cours de tunnel ne l'en éjecte
+  donc pas.
+
+### Écarts vs cadrage (consignés)
+
+- **Type de la séance « ligne de départ » : `Parcours` + obstacle `Vertical`.**
+  Le cadrage parle d'un « point déclaratif » sans fixer la forme. On modélise le
+  repère « franchit proprement X » par la forme **la plus neutre** d'un
+  entraînement à obstacles (un droit, propre). C'est un **choix d'implémentation**
+  (pas un nouveau contrat) ; toute la sémantique tient dans la **provenance**.
+- **Convergence des deux chemins après la bifurcation.** Le cadrage décrit le
+  chemin coach surtout par « config riche + aperçu bilan » ; on le fait **converger**
+  vers la même configuration (cheval → ligne → séance) que le cavalier, l'aperçu
+  démo en tête. Justification : les deux doivent **atterrir sur une récompense**
+  (DoD) ; dupliquer un sous-tunnel coach distinct serait de l'abstraction
+  prématurée. La « config plus riche » (multi-chevaux) est **hors périmètre**
+  (Pro, cf. points ouverts).
+- **Garde d'entrée traitée uniformément sur « 0 cheval ».** Un utilisateur qui
+  supprimerait son **unique** cheval (2.1) repasserait par le tunnel. Conforme à
+  « écrans vides = invitations » (le tunnel **est** l'invitation), mais c'est un
+  léger débordement du cas « nouvel arrivant » — assumé et consigné.
+- **Léger flash possible avant redirection.** La garde redirige dans un `effect`
+  (comme la garde d'auth de 1.4) : un nouvel inscrit peut entrapercevoir le feed
+  vide avant le saut vers `/onboarding`. Le feed vide étant déjà une **invitation**
+  (3.1), l'effet est bénin ; noté.
+- **Tests app = logique pure (Node), pas de rendu RN** (cohérent 1.4→3.4). La DoD
+  (chemins traversables, ligne `déclarative` exclue, séance duplicable, garde) est
+  prouvée par les helpers **purs** (`onboarding-flow` 16, `starting-line` 8 dont
+  l'exclusion record/maîtrisée, `bilan-demo` 5) ; les écrans sont couverts par
+  `tsc` **et** un **export Metro web** (24 routes, `/onboarding` incluse).
+
+### Points laissés ouverts (reports explicites)
+
+- **Le _vrai_ bilan de progression est le lot 4.4.** L'aperçu coach est **démo/
+  statique** (`BILAN_DEMO`) : le générateur réel (PDF/lien, curation de période,
+  couche objective + régularité) viendra en 4.4 et **réutilisera** la maîtrisée
+  (`metrics` 3.2) — sans toucher à cet aperçu, qui restera l'accroche.
+- **L'onboarding _invité_ est le lot 4.6.** Le tunnel invité (sauter la création
+  de cheval, atterrir en **lecture seule** sur le cheval partagé, bandeau « lecture
+  seule ») n'est **pas** ici. La garde actuelle (« 0 cheval → tunnel ») devra
+  **cohabiter** avec l'accès invité (un invité n'a pas de cheval **à lui** mais ne
+  doit pas être envoyé créer un cheval) — à brancher en 4.6.
+- **Le chemin coach multi-chevaux suppose le Pro / les quotas (4.1/4.3).** Ici, le
+  coach crée **un** cheval (création minimale réutilisée) ; « plusieurs chevaux »
+  et la bibliothèque de combinaisons riche (2.5) en onboarding relèvent du
+  **multi-cheval Pro** et de la **garde d'entitlement** — non construits (l'UI ne
+  vend pas, elle montre).
+- **Pré-amorçage de la 1re séance.** On a préféré ne **pas** pré-injecter un
+  obstacle (robustesse vs hydratation du brouillon persistant) : la séance guidée
+  démarre vide avec une invitation explicite. Un pré-remplissage « plus tenant par
+  la main » reste possible si l'usage le réclame.
+- **Confirmation 1.2 par deep link** (point ouvert hérité de 1.4 : `verify-email/
+  confirm`, `password-reset/confirm`) — toujours non câblé ; ce lot ne traite pas
+  les liens entrants.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Un nouvel utilisateur atteint une récompense visible** (feed + héros) **sans champ superflu** | Garde `shouldEnterOnboarding` (authentifié, 0 cheval → `/onboarding`, testée) → tunnel : cheval **minimal** (nom+niveau+hauteur, `HorseForm` 2.1) → ligne → séance → `router.replace('/')` sur le **vrai feed** (3.1) + `MetricsHero` (3.2) | ✅ |
+| **Ligne de départ `déclarative`** (provenance via `sessions`), **« antérieure à l'app »**, **exclue des agrégats** | `starting-line.test` : `buildStartingLineDto` ⇒ `provenance: 'déclaratif'`, DTO **revalidé** par `séanceCréerSchema` ; **exclusion prouvée** (ligne@130 n'éclipse pas le record `live`@110 ; **0 jalon** sur la ligne ; `hauteurMaîtrisée` la **filtre**) ; marquage feed via `provenanceMarqueur` (3.1) | ✅ |
+| **Chemins amateur et coach traversables** ; le coach montre un **aperçu de bilan (démo, sans 4.4)** | `onboarding-flow.test` : étapes des deux chemins (coach insère `bilan-demo`) ; `bilan-demo.test` : `BILAN_DEMO` cohérent (trajectoire croissante, record ≥ maîtrisée), `BilanDemoCard` marqué « Aperçu · exemple », **aucune** dépendance à 4.4 | ✅ |
+| **La 1re séance guidée crée une séance duplicable** (boucle nominale 2.3/3.x) | `guided-session-step` réutilise `useSessionCapture` + éditeurs 2.3 → séance **`live`** créée par `POST /horses/:id/sessions` ; duplicable par `draftFromPreviousSession` (2.3), inchangé | ✅ |
+| **Réutilisation, aucun module backend / endpoint nouveau** | `onboarding` = surface app ; cheval via `horses` (2.1), ligne+séance via `sessions` (2.2) ; **0** fichier `api/`/`shared`/DB modifié ; `buildStartingLineDto` réutilise `draftToCreateDto` (2.3) | ✅ |
+| **Accessibilité terrain** (≥ 44 px, AA+, chiffres tabulaires) ; **écrans vides = invitations** | Cibles via `Button`/`HeightBar`/éditeurs (tokens 1.4) ; `StatText` **tabulaire** (aperçu) ; libellés accessibles (bifurcation, barre, progression `progressbar`) ; le tunnel **est** l'invitation du feed vide (§7) | ✅ |
+| Aucun type d'API dupliqué | DTO/calc de `@hpt/shared` (`SéanceCréerDto`, `ChevalCréerDto`, `détecteJalons`/`recordAbsolu`/`hauteurMaîtrisée` pour le test d'exclusion) ; provenance posée via le contrat existant | ✅ |
+| `pnpm lint` | `biome check .` (279 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — 132 (shared) + 14 (api) + **160 (app : +29 onboarding — 16 flow, 8 starting-line, 5 bilan-demo)** | ✅ 306/306 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** (**24 routes**, `/onboarding` incluse) | ✅ vert |
+| `db:verify` (Postgres requis) | **inchangé** (aucun changement api/DB en 3.5) | ✅ 108/108 |
+| CI | job `ci` (sans DB) + job `db` (inchangés ; 3.5 est app-only) | ✅ |
+
+---
