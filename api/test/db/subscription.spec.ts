@@ -1,0 +1,278 @@
+import { fileURLToPath } from 'node:url';
+import type { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { Pool } from 'pg';
+import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+/**
+ * Preuve **de bout en bout** du lot 4.2 — **upgrade in-app & Mollie**. On prouve
+ * la DoD :
+ *  - un gratuit **souscrit** premium/pro depuis l'app (checkout en **mode test /
+ *    fake**), et au **retour** (re-login = re-lecture du claim) **le tier est
+ *    déverrouillé** — mais **seulement après le webhook** ;
+ *  - **le webhook est l'autorité** : un retour client **sans** webhook confirmé
+ *    **n'élève pas** le tier (état `en_attente`/pending) ; le webhook honoré
+ *    **l'élève** ; un paiement **en attente** (SEPA) reste pending ; un paiement
+ *    **échoué** n'élève pas ;
+ *  - **montants paramétrables** : les offres reflètent la **config** (env).
+ *
+ * On pilote le `FakeMollie` (récupéré via le jeton `MOLLIE`) pour simuler ce que
+ * ferait Mollie, puis on poste le **vrai** endpoint webhook : c'est lui qui
+ * réconcilie et élève le tier (jamais le retour client).
+ *
+ * Hors `pnpm test` (exige une base) : tourne via `pnpm db:verify`.
+ */
+
+const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://hpt:hpt@localhost:5432/hpt';
+process.env.DATABASE_URL = DATABASE_URL;
+process.env.JWT_ACCESS_SECRET ??= 'test-access-secret';
+process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret';
+// Montants **paramétrés** pour la preuve « lus de la config » (et mode fake : pas de clé).
+process.env.SUBSCRIPTION_PREMIUM_AMOUNT = '14.00';
+process.env.SUBSCRIPTION_PRO_AMOUNT = '28.00';
+process.env.SUBSCRIPTION_CURRENCY = 'EUR';
+process.env.MOLLIE_BILLING_URL = 'https://my.mollie.com/dashboard';
+process.env.MOLLIE_API_KEY = '';
+
+const migrationsFolder = fileURLToPath(new URL('../../drizzle', import.meta.url));
+const pool = new Pool({ connectionString: DATABASE_URL });
+const PASSWORD = 'motdepasse-solide';
+
+let app: INestApplication;
+// Type minimal du levier de simulation du FakeMollie (sans importer le module api ici).
+let fakeMollie: { simulerPaiement: (id: string, statut?: string) => boolean };
+
+async function http() {
+  return request(app.getHttpServer());
+}
+
+interface TestAccount {
+  compteId: string;
+  email: string;
+  accessToken: string;
+}
+
+async function registerAndLogin(email: string): Promise<TestAccount> {
+  const reg = await (await http())
+    .post('/auth/register')
+    .send({ email, nom: 'Cavalier', password: PASSWORD, type: 'amateur' })
+    .expect(201);
+  const access = await loginToken(email);
+  return { compteId: reg.body.id as string, email, accessToken: access };
+}
+
+async function loginToken(email: string): Promise<string> {
+  const login = await (await http())
+    .post('/auth/login')
+    .send({ email, password: PASSWORD })
+    .expect(200);
+  return login.body.access_token as string;
+}
+
+function bearer(token: string) {
+  return { Authorization: `Bearer ${token}` };
+}
+
+/** Lance un checkout et renvoie l'abonnement + le paymentId (extrait de l'URL fake). */
+async function lancerCheckout(token: string, tier: 'premium' | 'pro') {
+  const res = await (await http())
+    .post('/me/subscription/checkout')
+    .set(bearer(token))
+    .send({ tier_cible: tier })
+    .expect(200);
+  expect(res.body.checkout_url).toContain('/webhooks/mollie/dev/checkout/');
+  expect(res.body.abonnement_id).toMatch(/[0-9a-f-]{36}/);
+  const paymentId = String(res.body.checkout_url).split('/').pop() as string;
+  return { abonnementId: res.body.abonnement_id as string, paymentId };
+}
+
+async function entitlement(token: string) {
+  const res = await (await http()).get('/me/entitlement').set(bearer(token)).expect(200);
+  return res.body as {
+    tier: string;
+    capacités: Record<string, boolean>;
+    quotas: Record<string, number | null>;
+  };
+}
+
+async function statutAbonnement(token: string) {
+  const res = await (await http()).get('/me/subscription').set(bearer(token)).expect(200);
+  return res.body as {
+    abonnement: { statut: string; tier_cible: string } | null;
+    gestion_url: string | null;
+  };
+}
+
+beforeAll(async () => {
+  await pool.query('DROP SCHEMA IF EXISTS public CASCADE;');
+  await pool.query('CREATE SCHEMA public;');
+  await pool.query('DROP SCHEMA IF EXISTS drizzle CASCADE;');
+  await migrate(drizzle(pool), { migrationsFolder });
+
+  const { AppModule } = await import('../../src/app.module');
+  const { MOLLIE } = await import('../../src/entitlements/mollie/mollie.port');
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  app = moduleRef.createNestApplication();
+  await app.init();
+  fakeMollie = app.get(MOLLIE);
+}, 60000);
+
+afterAll(async () => {
+  await app?.close();
+  await pool.end();
+});
+
+describe('GET /me/subscription/offres (montants paramétrables, lus de la config)', () => {
+  it('exige l’authentification', async () => {
+    await (await http()).get('/me/subscription/offres').expect(401);
+  });
+
+  it('reflète les montants configurés (env), jamais des valeurs en dur', async () => {
+    const a = await registerAndLogin('sub-offres@hpt.test');
+    const res = await (await http())
+      .get('/me/subscription/offres')
+      .set(bearer(a.accessToken))
+      .expect(200);
+
+    const offres = res.body.offres as Array<{ tier: string; montant: string; devise: string }>;
+    const premium = offres.find((o) => o.tier === 'premium');
+    const pro = offres.find((o) => o.tier === 'pro');
+    expect(premium?.montant).toBe('14.00');
+    expect(pro?.montant).toBe('28.00');
+    expect(premium?.devise).toBe('EUR');
+  });
+});
+
+describe('Le webhook est l’autorité du tier (Stack §6)', () => {
+  it('un retour client SANS webhook confirmé N’ÉLÈVE PAS le tier (pending honnête)', async () => {
+    const a = await registerAndLogin('sub-authority@hpt.test');
+    expect((await entitlement(a.accessToken)).tier).toBe('gratuit');
+
+    // Souscription lancée → abonnement en_attente, paiement Mollie ouvert (non confirmé).
+    await lancerCheckout(a.accessToken, 'pro');
+
+    // « Retour client » : re-lecture de l'état + re-login (claim frais). Le tier
+    // ne doit PAS bouger tant que le webhook n'a pas confirmé.
+    const statut = await statutAbonnement(a.accessToken);
+    expect(statut.abonnement).toEqual({ statut: 'en_attente', tier_cible: 'pro' });
+
+    const apresRelogin = await entitlement(await loginToken(a.email));
+    expect(apresRelogin.tier).toBe('gratuit');
+    expect(apresRelogin.capacités.multi_chevaux).toBe(false);
+  });
+
+  it('le webhook honoré ÉLÈVE le tier (déverrouillage au retour, après re-login)', async () => {
+    const a = await registerAndLogin('sub-upgrade-pro@hpt.test');
+    const { paymentId } = await lancerCheckout(a.accessToken, 'pro');
+
+    // Mollie marque le paiement payé (mandat établi), PUIS poste le webhook.
+    expect(fakeMollie.simulerPaiement(paymentId, 'paid')).toBe(true);
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+
+    // L'abonnement est actif ; au retour (re-login = re-lecture du claim), le tier est PRO.
+    expect((await statutAbonnement(a.accessToken)).abonnement?.statut).toBe('actif');
+    const ent = await entitlement(await loginToken(a.email));
+    expect(ent.tier).toBe('pro');
+    expect(ent.capacités).toMatchObject({
+      analytique_diagnostic: true,
+      multi_chevaux: true,
+      comptes_invité: true,
+    });
+    expect(ent.quotas).toEqual({ chevaux: null, combinaisons: null });
+  });
+
+  it('premium : analytique/bilans déverrouillés, multi-chevaux toujours pro', async () => {
+    const a = await registerAndLogin('sub-upgrade-premium@hpt.test');
+    const { paymentId } = await lancerCheckout(a.accessToken, 'premium');
+
+    fakeMollie.simulerPaiement(paymentId, 'paid');
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+
+    const ent = await entitlement(await loginToken(a.email));
+    expect(ent.tier).toBe('premium');
+    expect(ent.capacités.analytique_diagnostic).toBe(true);
+    expect(ent.capacités.bilan_augmenté).toBe(true);
+    expect(ent.capacités.multi_chevaux).toBe(false);
+    expect(ent.quotas).toEqual({ chevaux: 1, combinaisons: null });
+  });
+
+  it('paiement EN ATTENTE (SEPA) : reste pending, tier inchangé', async () => {
+    const a = await registerAndLogin('sub-pending@hpt.test');
+    const { paymentId } = await lancerCheckout(a.accessToken, 'premium');
+
+    // Webhook reçu mais paiement encore « pending » (mandat SEPA non confirmé).
+    fakeMollie.simulerPaiement(paymentId, 'pending');
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+
+    expect((await statutAbonnement(a.accessToken)).abonnement?.statut).toBe('en_attente');
+    expect((await entitlement(await loginToken(a.email))).tier).toBe('gratuit');
+  });
+
+  it('paiement ÉCHOUÉ : abonnement échoué, tier inchangé', async () => {
+    const a = await registerAndLogin('sub-failed@hpt.test');
+    const { paymentId } = await lancerCheckout(a.accessToken, 'pro');
+
+    fakeMollie.simulerPaiement(paymentId, 'failed');
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+
+    expect((await statutAbonnement(a.accessToken)).abonnement?.statut).toBe('échoué');
+    expect((await entitlement(await loginToken(a.email))).tier).toBe('gratuit');
+  });
+});
+
+describe('Webhook : robustesse', () => {
+  it('est public (pas d’auth) et acquitte un paiement inconnu sans élever quoi que ce soit', async () => {
+    await (await http()).post('/webhooks/mollie').send({ id: 'tr_inexistant' }).expect(200);
+    await (await http()).post('/webhooks/mollie').send({}).expect(200);
+  });
+
+  it('est idempotent : re-livrer le webhook ne casse rien et garde le tier', async () => {
+    const a = await registerAndLogin('sub-idempotent@hpt.test');
+    const { paymentId } = await lancerCheckout(a.accessToken, 'premium');
+    fakeMollie.simulerPaiement(paymentId, 'paid');
+
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200); // re-livraison
+
+    expect((await statutAbonnement(a.accessToken)).abonnement?.statut).toBe('actif');
+    expect((await entitlement(await loginToken(a.email))).tier).toBe('premium');
+  });
+});
+
+describe('GET /me/subscription & résiliation', () => {
+  it('renvoie l’URL de gestion Mollie (renvoi résiliation, Spec §9.3)', async () => {
+    const a = await registerAndLogin('sub-gestion@hpt.test');
+    expect((await statutAbonnement(a.accessToken)).gestion_url).toBe(
+      'https://my.mollie.com/dashboard',
+    );
+  });
+
+  it('résilier un abonnement actif le passe en « annulé »', async () => {
+    const a = await registerAndLogin('sub-cancel@hpt.test');
+    const { paymentId } = await lancerCheckout(a.accessToken, 'pro');
+    fakeMollie.simulerPaiement(paymentId, 'paid');
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+
+    const res = await (await http())
+      .post('/me/subscription/annuler')
+      .set(bearer(a.accessToken))
+      .expect(200);
+    expect(res.body.abonnement.statut).toBe('annulé');
+  });
+});
+
+describe('Page de simulation dev (webhooks simulables localement, mode fake)', () => {
+  it('GET …/dev/checkout/:id simule le paiement, réconcilie et redirige', async () => {
+    const a = await registerAndLogin('sub-devpage@hpt.test');
+    const { paymentId } = await lancerCheckout(a.accessToken, 'pro');
+
+    // Ouvrir l'URL de checkout fake = simuler le paiement + réconcilier (comme le webhook).
+    const res = await (await http()).get(`/webhooks/mollie/dev/checkout/${paymentId}`).expect(302);
+    expect(res.headers.location).toBe('hpt://upgrade-return');
+
+    expect((await entitlement(await loginToken(a.email))).tier).toBe('pro');
+  });
+});

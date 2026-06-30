@@ -1,7 +1,9 @@
 import {
   NIVEAUX_CHEVAL,
   PROVENANCES,
+  STATUTS_ABONNEMENT,
   TIERS,
+  TIERS_PAYANTS,
   TYPES_COMPTE,
   TYPES_OBSTACLE,
   TYPES_SEANCE,
@@ -26,3 +28,12 @@ export const chevalNiveauEnum = pgEnum('cheval_niveau', NIVEAUX_CHEVAL);
 export const seanceTypeEnum = pgEnum('seance_type', TYPES_SEANCE);
 export const seanceProvenanceEnum = pgEnum('seance_provenance', PROVENANCES);
 export const obstacleTypeEnum = pgEnum('obstacle_type', TYPES_OBSTACLE);
+
+/**
+ * Enums de l'**abonnement** (lot 4.2) — réutilisent les tuples figés de
+ * `@hpt/shared` (tiers payants premium/pro ; statuts du cycle Mollie/SEPA).
+ * Comme les enums socle (0.3), les libellés en base sont exactement ceux du
+ * domaine ; ils ne sont jamais redéclarés ici.
+ */
+export const abonnementTierEnum = pgEnum('abonnement_tier', TIERS_PAYANTS);
+export const abonnementStatutEnum = pgEnum('abonnement_statut', STATUTS_ABONNEMENT);

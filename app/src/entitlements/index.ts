@@ -13,3 +13,4 @@ export {
   EntitlementsProvider,
   useEntitlement,
 } from './entitlements-context';
+export { LockedFeature, type LockedFeatureProps } from './locked-feature';

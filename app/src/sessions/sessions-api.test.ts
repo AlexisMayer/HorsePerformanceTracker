@@ -12,7 +12,10 @@ import { createSessionsApi } from './sessions-api';
  */
 function fakeClient() {
   const request = vi.fn(async () => undefined as unknown);
-  const client: ApiClient = { request: request as ApiClient['request'] };
+  const client: ApiClient = {
+    request: request as ApiClient['request'],
+    refreshSession: async () => true,
+  };
   return { client, request };
 }
 

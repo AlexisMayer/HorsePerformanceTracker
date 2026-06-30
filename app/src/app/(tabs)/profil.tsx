@@ -2,11 +2,12 @@ import { Ionicons } from '@expo/vector-icons';
 import type { Tier } from '@hpt/shared';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, View } from 'react-native';
 import { useAuth } from '../../auth';
 import { useCombinations } from '../../combinations';
 import { useEntitlement } from '../../entitlements';
 import { useHorses } from '../../horses';
+import { ouvrirGestionMollie, useAbonnement, useAnnulerAbonnement } from '../../subscription';
 import { colors, spacing } from '../../theme';
 import { Badge, Button, Card, Screen, Text } from '../../ui';
 import { ScreenHeader } from '../../ui/ScreenHeader';
@@ -67,6 +68,8 @@ export default function ProfilScreen() {
           ) : null}
         </View>
       </Card>
+
+      <AbonnementCard tier={tier} />
 
       <Pressable
         accessibilityRole="button"
@@ -145,6 +148,82 @@ export default function ProfilScreen() {
   );
 }
 
+/**
+ * Carte **Abonnement** (lot 4.2, Spec §9.3) — affiche le forfait et offre :
+ *  - en **gratuit** → un point d'entrée vers le **paywall** (`/upgrade`) ;
+ *  - en **premium/pro** → **gérer/résilier** (renvoi vers l'espace **Mollie** +
+ *    résiliation in-app) ;
+ *  - un état **pending** honnête si un paiement (SEPA) n'est pas encore confirmé.
+ *
+ * Le tier vient de l'entitlement (autorité serveur) ; l'état d'abonnement de
+ * `GET /me/subscription`.
+ */
+function AbonnementCard({ tier }: { tier: Tier | null }) {
+  const router = useRouter();
+  const { data } = useAbonnement();
+  const annuler = useAnnulerAbonnement();
+  const abonnement = data?.abonnement ?? null;
+  const gestionUrl = data?.gestion_url ?? null;
+  const enAttente = abonnement?.statut === 'en_attente';
+  const payant = tier === 'premium' || tier === 'pro';
+
+  const confirmerRésiliation = () => {
+    Alert.alert(
+      'Résilier l’abonnement ?',
+      'Ton accès restera actif jusqu’à la fin de la période en cours.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        { text: 'Résilier', style: 'destructive', onPress: () => annuler.mutate() },
+      ],
+    );
+  };
+
+  return (
+    <Card>
+      <View style={styles.rowBetween}>
+        <View style={styles.rowLeft}>
+          <Ionicons name="card" size={20} color={colors.primary} />
+          <Text variant="bodyStrong">Abonnement</Text>
+        </View>
+        {tier ? <Badge label={TIER_LABELS[tier]} tone={payant ? 'primary' : 'neutral'} /> : null}
+      </View>
+
+      {enAttente ? (
+        <Text variant="body" color="textMuted">
+          Paiement en attente — ton accès s’ouvrira dès la confirmation (un prélèvement SEPA peut
+          prendre un peu de temps).
+        </Text>
+      ) : null}
+
+      {payant ? (
+        <View style={styles.aboActions}>
+          {gestionUrl ? (
+            <Button
+              variant="secondary"
+              label="Gérer mon abonnement"
+              onPress={() => ouvrirGestionMollie(gestionUrl)}
+            />
+          ) : null}
+          <Button
+            variant="danger"
+            label="Résilier"
+            loadingLabel="Résiliation…"
+            loading={annuler.isPending}
+            onPress={confirmerRésiliation}
+          />
+        </View>
+      ) : (
+        <>
+          <Text variant="body" color="textMuted">
+            Débloque l’analytique, les bilans augmentés et le suivi de plusieurs chevaux.
+          </Text>
+          <Button label="Voir les forfaits" onPress={() => router.push('/upgrade')} />
+        </>
+      )}
+    </Card>
+  );
+}
+
 const styles = StyleSheet.create({
   content: {
     gap: spacing.md,
@@ -169,6 +248,9 @@ const styles = StyleSheet.create({
   },
   noticeCard: {
     borderColor: colors.celebration,
+  },
+  aboActions: {
+    gap: spacing.xs,
   },
   spacer: {
     flex: 1,

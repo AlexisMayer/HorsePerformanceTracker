@@ -1,3 +1,4 @@
+export * from './abonnement';
 export * from './account-export';
 export * from './auth';
 export * from './champs-techniques';
