@@ -2826,3 +2826,170 @@ prouve** la garde ; les lots payants l'**attacheront**.
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`) — **aucune migration** en 4.1 | ✅ |
 
 ---
+
+## Lot 4.2 — Upgrade in-app & Mollie · 2026-06-30
+
+Suite de la **Phase 4 (Monétisation)**. Extension du module **`entitlements`**
+(api) + tranche **`app`** : on construit le **flux d'upgrade in-app** (paywall,
+**checkout Mollie**, **webhooks**, **déverrouillage**) et l'**état verrouillé
+générique** réutilisable. On **réutilise** l'entitlement de 4.1 comme **cible du
+déverrouillage** : la garde, les quotas et la matrice ne sont **pas** refaits.
+Strictement le lot 4.2 : **aucune** fonction premium réelle (analytique 5.1, IA
+4.5, bilan de progression 4.4, multi-chevaux/invités 4.6) — ici, **uniquement**
+le verrou générique + le paywall + le checkout + l'autorité du tier.
+
+### Emplacement (décisions tranchées)
+
+- **Contrats dans `shared`** : `schemas/abonnement.ts` (+ test, + barrel) —
+  `TIERS_PAYANTS` (premium/pro, sous-ensemble strict de `TIERS`),
+  `STATUTS_ABONNEMENT` (`en_attente`/`actif`/`annulé`/`échoué`), DTO d'entrée
+  (`checkoutDemandeSchema`) et de sortie (`checkoutSortieSchema`,
+  `abonnementStatutSortieSchema`, `offresSortieSchema`). Comme 4.1, sorties à
+  **scalaires/booléens** → re-validées au bord de l'app.
+- **Module API `entitlements` (extension)** — `api/src/entitlements/` :
+  `subscription.config.ts` (montants/clés/URLs **lus de l'env**),
+  `mollie/mollie.port.ts` (interface `MolliePort` + jeton `MOLLIE`),
+  `mollie/fake-mollie.ts` (adaptateur dev/test, **webhooks simulables**),
+  `mollie/mollie-http.client.ts` (adaptateur **réel**, API Mollie v2, mode test),
+  `subscriptions.service.ts` (offres, checkout, **réconciliation = autorité**,
+  statut, résiliation), `subscriptions.controller.ts` (`/me/subscription/*`,
+  authentifié), `mollie-webhook.controller.ts` (`/webhooks/mollie`, **public**, +
+  page de simulation dev). Le module **fournit** le `MOLLIE` via `useFactory`
+  (fake sans clé, http avec clé).
+- **Schéma + migration** : `api/src/db/schema/abonnement.ts` + enums
+  (`abonnement_tier`, `abonnement_statut` réutilisant les tuples `shared`) +
+  `api/drizzle/0005_abonnement.sql` — **additive** (2 CREATE TYPE + 1 CREATE
+  TABLE + FK `compte_id` **CASCADE** + 2 index ; aucune table existante touchée).
+- **Tranche front** : `app/src/subscription/` (`subscription-api`,
+  `checkout-browser-port` + `native-checkout-browser-port`, `upgrade-flow` pur,
+  `use-subscription` hooks, barrel, 2 tests). État verrouillé générique :
+  `app/src/ui/LockedOverlay.tsx` (primitive voile + cadenas) +
+  `app/src/entitlements/locked-feature.tsx` (slot lisant l'entitlement). Paywall :
+  `app/src/app/upgrade.tsx`. Câblages : **Analytique** (verrou), **Profil** (carte
+  Abonnement : upgrade / gérer / résilier / pending).
+
+### Décisions tranchées (et pourquoi)
+
+- **Le webhook Mollie est l'autorité du tier — pas le retour client.** `compte.tier`
+  n'est élevé qu'à **un seul endroit** : `SubscriptionsService.réconcilier`, appelé
+  par `POST /webhooks/mollie`, et **seulement** sur un paiement **honoré** (`paid`/
+  `authorized`, mandat valide). `créerCheckout` ne fait que **préparer** (ligne
+  `abonnement` `en_attente` + premier paiement Mollie) ; il **ne touche jamais** le
+  tier. Le **retour client** ne fait que **re-lire** l'entitlement (4.1). C'est ce
+  qui garantit qu'un client ne peut pas s'auto-élever et que l'app et le serveur
+  disent toujours la même chose (autorité serveur, Architecture §5).
+- **Contrat 4.1 honoré : refresh forcé au retour.** L'entitlement (4.1) lit le
+  `tier` du **claim** JWT, pas la DB. Après un upgrade, le claim est **périmé** tant
+  qu'on ne tourne pas le jeton. L'app expose donc `auth.refreshSession()` (nouvelle
+  méthode `ApiClient.refreshSession`, *single-flight* comme l'interceptor 401) :
+  au retour du checkout, `upgrade-flow` **force la rotation** (le `rotate` de 1.1
+  relit `compte.tier`) puis **re-lit** entitlement + abonnement. Sans webhook
+  confirmé, la re-lecture rend toujours `gratuit` → **état pending honnête**.
+- **SEPA Direct Debit privilégié + carte ; asynchronie assumée** (Stack §6). Le
+  flux Mollie retenu : client + **premier paiement** (`sequenceType: first`) pour
+  établir le **mandat**, puis **abonnement récurrent** sur ce mandat une fois le
+  paiement honoré. Le mandat SEPA pouvant rester **en attente**, l'abonnement reste
+  `en_attente` (UI *pending*, jamais d'élévation) jusqu'au **webhook** confirmant.
+  La réconciliation est **idempotente** (re-livraison du webhook sans effet ;
+  abonnement récurrent créé **une seule fois**).
+- **Port Mollie + deux adaptateurs (pas d'abstraction prématurée, mais une seam
+  testable).** `MolliePort` isole l'I/O PSP (même posture que le port de partage
+  3.3). Le **fake** (in-memory, déterministe) sert en **dev sans clé** et en
+  **test** : il rend le flux *simulable localement* (son URL de checkout pointe une
+  page de simulation dev `GET /webhooks/mollie/dev/checkout/:id` qui simule le
+  paiement + réconcilie + redirige). Le **http client** (mode test, clé `test_…`)
+  n'est **jamais** importé par un test (couvert par `tsc`). Le service ne dépend
+  que du **port** → e2e du webhook sans réseau.
+- **Montants paramétrables, jamais en dur.** Tarifs/devise/intervalle vivent dans
+  **une** source (`subscription.config.ts`), surchargés par l'env ; défauts **dev**
+  ergonomiques (même posture que les secrets dev de 1.1). L'app ne connaît **aucun**
+  montant : elle les **lit** via `GET /me/subscription/offres`. Prouvé : l'e2e
+  paramètre l'env et l'endpoint reflète les valeurs.
+- **État verrouillé = invitation, générique et réutilisable** (UI/UX §3.1/§4/§6.8/§7).
+  `LockedOverlay` (primitive) : aperçu **désaturé** sous **voile crème ~55 %**
+  (token `lockedVeil` posé en 1.4) + **cadenas** encre douce + CTA ; toute la
+  surface est tactile (≥ 44 px), `accessibilityRole=button` + hint. `LockedFeature`
+  (slot) lit l'entitlement (4.1) : capacité débloquée → contenu réel ; sinon →
+  aperçu grisé dont l'appui **ouvre l'upgrade** (`/upgrade?cap=…`), jamais
+  culpabilisant. C'est le **slot que 4.4/4.5/4.6/5.1 habilleront** (ils passeront
+  leur aperçu + leur contenu réel ; rien à redéclarer). En 4.2, **Analytique**
+  l'utilise (esquisse de heatmap grisée ; le vrai diagnostic est 5.1).
+- **Résiliation = renvoi Mollie + annulation in-app.** `GET /me/subscription`
+  renvoie l'`gestion_url` (espace Mollie, Spec §9.3) ; le Profil propose **Gérer**
+  (renvoi) **et** **Résilier** (annule le récurrent via le port, marque `annulé`,
+  confirmation native). La **bascule fine de tier** au terme de la période est
+  laissée à Mollie (point ouvert).
+- **Webhook public, 200 systématique.** `POST /webhooks/mollie` n'a **pas** de
+  garde (l'appelant est Mollie). Corps `x-www-form-urlencoded` (`id=tr_…`) parsé
+  par le body-parser Nest. On répond **200** pour acquitter (paiement inconnu/sans
+  id = no-op) ; une erreur transitoire laisse remonter une 5xx → Mollie réessaie.
+
+### Écarts vs cadrage (consignés)
+
+- **Table `abonnement` hors Modèle de données** — **écart assumé**, au même titre
+  que `refresh_token` (1.1) : l'intégration Mollie impose un état serveur (lien
+  compte ↔ paiement/mandat, statut du cycle SEPA) absent du modèle métier. Ajout
+  par **migration additive** ; FK `compte_id` **CASCADE** (purge RGPD, 1.3). On n'y
+  stocke que des **références opaques Mollie** (customer/payment/subscription/
+  mandate) — **aucune** donnée de cheval, **aucun** moyen de paiement.
+- **Nouvelle dépendance app `expo-web-browser ~56.0.5`** (version *bundled* SDK 56)
+  pour ouvrir le checkout (`openAuthSessionAsync`, retour par deep link). Isolée
+  derrière `CheckoutNavigateurPort` : la logique d'upgrade reste **testable en
+  Node** (le natif n'est jamais importé par un test). Lockfile mis à jour.
+- **`ApiClient.refreshSession` ajouté** (rotation forcée hors 401) pour honorer le
+  contrat 4.1. Les 6 faux clients des tests existants ont reçu la méthode (aucune
+  assertion comportementale modifiée).
+- **`tier` toujours porté par le claim** (hérité de 4.1) : un upgrade ne prend
+  effet qu'au **prochain jeton**. 4.2 **résout** ce point en forçant le refresh au
+  retour (cf. décision ci-dessus) ; la fraîcheur résiduelle (≤ 15 min) ne joue plus
+  pour l'upgrade observé.
+- **Repli IAP store : documenté, non construit** (consigne). La voie UE/DMA sans
+  IAP est la seule implémentée ; le repli est noté dans
+  `native-checkout-browser-port.ts` et ici — à n'activer que si une politique de
+  store l'impose hors UE.
+
+### Points laissés ouverts (reports explicites)
+
+- **Les vraies fonctions payantes** s'installeront **derrière le verrou** en
+  4.4 (bilan de progression), 4.5 (bilan augmenté IA), 4.6 (invités), 5.1
+  (analytique) : elles habilleront `LockedFeature`/`LockedOverlay` (aperçu +
+  contenu réel) et attacheront `@RequireCapacité` côté serveur (4.1). Le slot et la
+  garde sont prêts.
+- **Tarifs définitifs** : décision **business hors build**. Les montants restent
+  paramétrables (env) ; les défauts dev ne sont pas des tarifs de prod.
+- **Gestion fine de la résiliation / proration côté Mollie** : la bascule de tier
+  au terme de la période (et la proration) n'est pas pilotée finement ici — d'où le
+  **renvoi** vers l'espace Mollie. Un webhook d'abonnement (ex. `subscription
+  canceled`/`payment failed` récurrent) qui **redescendrait** le tier reste à
+  brancher (la réconciliation est en place ; il suffira d'étendre les cas).
+- **Concurrence / transaction** : checkout = insert puis appel PSP puis update
+  (non transactionnel) ; réconciliation = create récurrent puis 2 updates. Suffisant
+  pour un usager seul ; un verrou/transaction reste possible si nécessaire.
+- **Signature/HMAC du webhook** : Mollie n'envoie que l'id ; l'authenticité est
+  obtenue en **re-lisant** le paiement chez Mollie (jamais en croyant le corps).
+  Aucun secret de webhook à gérer ; rien à durcir de plus.
+- **Validation Mollie réelle** : l'adaptateur http est couvert par `tsc` ; un
+  test de bout en bout contre l'API **test** Mollie (clé réelle) reste à exécuter
+  côté validateur (hors sandbox, sans réseau PSP).
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Un gratuit souscrit premium/pro depuis l'app ; au retour le tier est déverrouillé** | e2e `subscription.spec.ts` : checkout (mode **fake**) → `simulerPaiement(paid)` → **webhook** → `actif` ; **re-login** (re-lecture du claim) → entitlement **pro/premium** | ✅ |
+| **Le webhook est l'autorité** : retour client **sans** webhook **n'élève pas** (pending) ; webhook confirmant **élève** | e2e : avant webhook → `en_attente`, re-login → **gratuit** ; après webhook honoré → **pro** ; **pending** (SEPA) reste gratuit ; **échoué** reste gratuit | ✅ |
+| **Montants paramétrables** : aucune valeur en dur (lus de la config) | `subscription.config.spec.ts` (montants depuis l'env, fake sans clé) + e2e `GET /me/subscription/offres` reflète l'env (`14.00`/`28.00`) | ✅ |
+| **Toucher une fonction grisée ouvre l'upgrade** (verrouillage = invitation) | `LockedFeature` (lit l'entitlement) → `LockedOverlay` (pressable, ≥ 44 px) → `router.push('/upgrade?cap=…')` ; **Analytique** câblée ; export Metro bundle `/upgrade` | ✅ |
+| **État verrouillé lisible** (voile crème ~55 % + cadenas, AA+) | `LockedOverlay` : token `lockedVeil`, cadenas encre douce, CTA, `accessibilityRole`/hint ; cible ≥ 44 px | ✅ |
+| **Retour & re-lecture (4.1) + pending honnête** | `upgrade-flow.test.ts` : `rafraîchir()` (refresh forcé + re-lecture) appelé **succès comme fermeture** ; paywall affiche l'état `en_attente` | ✅ |
+| **Résiliation** (renvoi Mollie + annulation) | e2e : `POST /me/subscription/annuler` actif → `annulé` ; `gestion_url` renvoyée ; Profil câblé | ✅ |
+| DTO sans duplication ; Zod au bord | DTO `@hpt/shared` (api + app) ; sorties validées (`offres`, `checkout`, `statut`) | ✅ |
+| Pas de débordement de périmètre | **0** fonction premium réelle ; garde/quotas/matrice (4.1) **réutilisés** ; IAP **documenté, non construit** | ✅ |
+| `pnpm lint` | `biome check .` (319 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **158 (shared, +9)** + **27 (api, +9 : config + fake)** + **170 (app, +8 : subscription-api + upgrade-flow)** | ✅ 355/355 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** OK (`/upgrade` bundlé) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — **130** (+12 `subscription` : webhook autorité, pending, échoué, idempotent, offres, résiliation, page dev) | ✅ 130/130 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` 0005 + `verify`) | ✅ |
+
+---

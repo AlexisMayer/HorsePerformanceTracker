@@ -43,6 +43,12 @@ export interface AuthContextValue {
   requestPasswordReset: (email: string) => Promise<void>;
   /** Lot 1.2 — (re)demande le lien de vérification d'e-mail. */
   resendEmailVerification: (email: string) => Promise<void>;
+  /**
+   * Lot 4.2 — **force une rotation du jeton** puis recharge le compte (`me`).
+   * Appelé après un upgrade (contrat 4.1) pour que le claim `tier` rejoigne
+   * l'entitlement déverrouillé côté serveur. Renvoie `false` sans session.
+   */
+  refreshSession: () => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -136,6 +142,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
   }, [queryClient]);
 
+  // Lot 4.2 — rotation forcée du jeton (nouveau claim `tier`) + rechargement du
+  // compte. Le déverrouillage réel reste l'autorité serveur (webhook + claim).
+  const refreshSession = useCallback(async () => {
+    const ok = await client.refreshSession();
+    if (ok) await queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
+    return ok;
+  }, [client, queryClient]);
+
   const signIn = useMutation<void, Error, LoginDto>({
     mutationFn: async (dto) => {
       const tokens = await authApi.login(dto);
@@ -189,6 +203,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signOut,
     requestPasswordReset: (email) => authApi.requestPasswordReset(email),
     resendEmailVerification: (email) => authApi.requestEmailVerification(email),
+    refreshSession,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

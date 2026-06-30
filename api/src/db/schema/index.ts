@@ -7,6 +7,7 @@
  * Propriété orientée vers le bas, `ON DELETE CASCADE` à chaque arête :
  *   Compte → Cheval → Séance → { Obstacle, Tour, Contexte }
  */
+export * from './abonnement';
 export * from './champs-techniques';
 export * from './cheval';
 export * from './combinaison';

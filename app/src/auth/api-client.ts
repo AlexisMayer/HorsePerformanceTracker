@@ -40,6 +40,13 @@ export interface ApiRequestInit extends Omit<RequestInit, 'body'> {
 
 export interface ApiClient {
   request<T>(path: string, init?: ApiRequestInit): Promise<T>;
+  /**
+   * Force une **rotation du jeton** (refresh) hors d'un 401 — utilisé après un
+   * upgrade réussi (lot 4.2) pour que le claim `tier` rejoigne l'entitlement
+   * (contrat 4.1). Single-flight comme l'interceptor ; `false` si pas de session
+   * (ou refresh rejeté). Ne lève jamais.
+   */
+  refreshSession(): Promise<boolean>;
 }
 
 export interface CreateApiClientOptions {
@@ -134,7 +141,7 @@ export function createApiClient({
     return parseBody<T>(response);
   }
 
-  return { request };
+  return { request, refreshSession: refresh };
 }
 
 /** Lit le corps en JSON, ou en texte, sans jamais lever (diagnostic d'erreur). */
