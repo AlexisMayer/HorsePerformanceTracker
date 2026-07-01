@@ -7,6 +7,7 @@ import { FeedModule } from './feed/feed.module';
 import { HealthModule } from './health/health.module';
 import { HorsesModule } from './horses/horses.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { ProgressionReportModule } from './progression-report/progression-report.module';
 import { SessionsModule } from './sessions/sessions.module';
 import { SharingModule } from './sharing/sharing.module';
 
@@ -22,6 +23,7 @@ import { SharingModule } from './sharing/sharing.module';
     FeedModule,
     MetricsModule,
     SharingModule,
+    ProgressionReportModule,
   ],
 })
 export class AppModule {}

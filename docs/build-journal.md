@@ -3177,3 +3177,161 @@ sans DB) ; `pnpm --filter @hpt/api db:verify` exécute les e2e (Postgres requis,
 | CI | job `ci` (sans DB) + job `db` (`migrate` 0→**0006** + `verify`) | ✅ posé |
 
 ---
+
+## Lot 4.4 — Bilan de progression · 2026-07-01
+
+Suite de la **Phase 4 (Monétisation)**. Module **`progression-report`** (api) +
+fonction pure **régularité** dans `shared` + tranche **`app`** : le **vrai
+générateur** de bilan de progression (Spec §6) — un **artefact autonome**
+(PDF/lien), professionnel, destiné à **quelqu'un sans l'app** (le client d'un
+coach), bâti **uniquement sur la couche objective** et les séances `live`. Il
+**réutilise** `metrics` (3.2, hauteur maîtrisée §10) et `sessions` (2.2) **via
+leurs services** et **ne recalcule rien** (Architecture §2). C'est le générateur
+**explicitement découplé** de l'**aperçu démo** de 3.5 (statique) : 3.5 était
+l'accroche, 4.4 est le livrable. Strictement le lot 4.4 : **ni** bilan augmenté IA
+(4.5), **ni** comptes invité (4.6), **ni** bilan de séance simple (3.3) — trois
+objets distincts (Spec §5.4/§8).
+
+### Emplacement (décisions tranchées)
+
+- **`shared` (calc + DTO)** — le calcul vit ici, **une seule** implémentation
+  (Archi §2) : `calc/regularite.ts` (fonction pure `régularité` + `RégularitéBilan`,
+  §9, `live` only, fenêtre de curation) ; `schemas/progression-report.ts` (params de
+  **curation** `bilanProgressionParamsSchema` = période + indicateurs + format ; les
+  **6 sections** `bilanSectionsSchema` ; artefact + enveloppe `bilanProgressionSchema`).
+  La courbe de maîtrise **réutilise** `pointMaîtriseSchema` (3.2). Barils
+  (`calc/index`, `schemas/index`) mis à jour.
+- **`api/src/progression-report/`** — `compose-bilan.ts` (**pur** :
+  `composeBilanSections`, curation + assemblage, testé sans DB),
+  `render-bilan-html.ts` (**pur** : document HTML autonome), `bilan-render.port.ts`
+  (`BilanRenderPort` + jeton `BILAN_RENDER`), `local-bilan-render.ts` (adaptateur
+  dev/stub : HTML → fichier `file://`), `progression-report.service.ts` (orchestration
+  I/O), `progression-report.controller.ts` (`POST /horses/:id/progression-report`,
+  garde), `progression-report.module.ts`. Enregistré dans `app.module.ts`.
+  **`MetricsService` est désormais exporté** (extension non destructive de 3.2) pour
+  la réutilisation.
+- **`app/src/progression-report/`** — `period-presets.ts` (**pur**, testé),
+  `progression-report-api.ts`, `use-progression-report.ts` (mutation à la demande),
+  `bilan-generator.tsx` (écran de génération : curation + résultat), `bilan-apercu.tsx`
+  (aperçu grisé pour le verrou). Route `app/src/app/progression-report.tsx`
+  (**verrouillée** via `LockedFeature`, verrou 4.2) ; **point d'entrée** dans le Profil.
+
+### Décisions tranchées (et pourquoi)
+
+- **Régularité posée dans `shared`, pure et testée (le cœur du bilan, §6.1).**
+  Elle n'existait pas → ajoutée ici, **une seule implémentation** (comme la
+  maîtrisée 3.2). `régularité(séances, { from, to })` filtre le **`live`** (§2),
+  restreint à la période (curation), puis dérive **fréquence** (`séances_par_mois`,
+  rapportée à l'étendue **documentée**) et **continuité** (`semaines_actives` +
+  `plus_longue_série_semaines`, par bucket de semaine aligné sur l'époque).
+  Distinction clé vs maîtrisée : la régularité **inclut le Plat** (assiduité, pas
+  hauteur — Modèle §3) mais **exclut le `déclaratif`** (couche objective, §2).
+- **Réutilisation de la maîtrisée 3.2 — aucun recalcul divergent (Archi §2).** Le
+  service appelle `metrics.compose` (maîtrise + vitrine déjà dérivées) et
+  `sessions.listForHorse` ; **rien n'est réimplémenté**. La **trajectoire** = la
+  **courbe** `maîtrise.série` **restreinte à la période** (projection de curation,
+  pas un recalcul) ; le **niveau démontré** maîtrisée = le **dernier point** de la
+  courbe dans la période (cohérent avec le « chiffre courant » de 3.2). Le **plus
+  haut sans-faute concours** dérive des tours `Concours` `live` via le primitif
+  `sansFaute` de `shared` (dérivation légère sur la brique existante, pas une
+  nouvelle métrique).
+- **Curation au niveau rapport (§6.3), donnée inviolable (§2).** La **période**
+  (`from`/`to`, bornes incluses) **restreint** ce qu'on résume ; les **indicateurs**
+  décochés **retirent** leur section (`identité`/`période` restent, cadre du
+  livrable). `composeBilanSections` est **pure** : elle ne mute jamais ses entrées.
+  Prouvé par test : resserrer la période change le rapport (moins de séances, autre
+  maîtrisée) **sans** toucher les séances sous-jacentes (relecture inchangée).
+- **Pipeline `HTML+CSS → PDF via Playwright` derrière un port ; local/stub en dev
+  (Stack §5).** Le rendu HTML est **pur** (document autonome, styles inline, chaleur
+  équestre — le lien web **et** la source PDF). La **sortie** passe par le port
+  `BILAN_RENDER` : en dev, `LocalBilanRender` écrit le HTML en **fichier local**
+  (`file://`) — le format `lien` est un **livrable réel** (`stub: false`), le format
+  `pdf` un **substitut** (`stub: true`). **Pourquoi le stub** : `playwright` n'est
+  pas une dépendance du dépôt (seuls les navigateurs sont préinstallés), et le
+  découpage **Serverless Job → Object Storage → URL présignée** est un point
+  **infra/déploiement** (mission : **non bloquant** pour la DoD). Le port est la
+  **couture** où l'adaptateur prod se substitue **sans toucher** au service ni à la
+  composition — même posture que le port Mollie (4.2) et le port de partage (3.3).
+- **Endpoint gardé premium/pro (garde 4.1 attachée).** C'est ce que 4.1 annonçait
+  (« les fonctions payantes 4.4+ l'attacheront ») : `@RequireCapacité('bilan_
+  progression')` + `EntitlementGuard`, **après** `JwtAccessGuard`. Un **gratuit**
+  est refusé en **403** (`CapacitéRequiseError`) ; l'UI ne fait que griser
+  (`LockedFeature`). Premium = rapport **personnel** (son cheval) ; pro =
+  **multi-chevaux** (un rapport par cheval — voir écart).
+- **`POST` (pas `GET`) — action qui produit un artefact.** Générer un bilan
+  **rend un document** (rendu HTML → sortie fichier/URL, Stack §5) et porte un corps
+  de **curation** (période + indicateurs + format). C'est sémantiquement une action,
+  pas une lecture idempotente ; elle n'écrit néanmoins **aucune** donnée métier
+  (inviolabilité §2). Route ressource `POST /horses/:id/progression-report` (cheval
+  dans l'URL, propriété vérifiée → 404 sans fuite), cohérente avec §5.
+- **Composition/rendu purs, service mince (testabilité).** Toute la logique de
+  curation + assemblage + HTML est en **fonctions pures** (unit-testées **sans DB**,
+  dans `pnpm test`) ; le service ne fait que l'**I/O** (lectures via services + port).
+  L'e2e (`db:verify`) prouve le **chemin câblé** (garde 403, 404, artefact réel).
+
+### Écarts vs cadrage (consignés)
+
+- **PDF en dev = stub HTML (assumé, non bloquant).** La mission autorise
+  explicitement « génération locale + sortie fichier local/stub ; Job/Object Storage
+  différés infra ». `playwright` n'étant pas installé, le format `pdf` renvoie le
+  **même HTML** marqué `stub: true` ; le **lien web** (HTML) est le livrable réel de
+  dev. L'adaptateur prod (Playwright + Object Storage) se branche sur le **port**
+  sans changement de logique.
+- **Rapport mono-cheval (par ressource `/horses/:id/…`).** La distinction
+  premium/pro « mono vs multi » est portée par le **quota de chevaux** (4.1) : un
+  premium n'a qu'**un** cheval, un pro en a **plusieurs** et génère **un rapport par
+  cheval** via la même route. On **ne** construit **pas** de document agrégé
+  multi-chevaux (abstraction prématurée) — chaque cheval a son bilan.
+- **`MetricsService` exporté** (additif, non destructif) : `progression-report` le
+  consomme pour réutiliser la maîtrisée. Aucun contrat ni type modifié.
+- **Double lecture de l'historique.** Le service lit `listForHorse` **et**
+  `metrics.compose` (qui relit l'historique en interne) — une lecture de plus, sur
+  un chemin **froid/à la demande** (pas un feed). Acceptée pour la v1 (cohérent avec
+  la note de recompute de 3.2) ; un partage de lecture est possible plus tard.
+- **Sortie app non re-validée par Zod au bord.** Comme `metrics` (dates en `Date`
+  côté type, chaînes ISO sur le fil), la réponse n'est **pas** re-parsée côté app
+  (contrairement aux DTO à scalaires de 4.1/4.2) ; l'affichage n'utilise que des
+  nombres/enums, insensibles à ce détail de transport.
+
+### Points laissés ouverts (reports explicites)
+
+- **Serverless Job + Object Storage / URL présignée en prod (infra).** L'adaptateur
+  `BilanRenderPort` de prod (`HTML → PDF via Playwright` en Job, poussé sur Object
+  Storage, servi par URL présignée) se branche sur le jeton `BILAN_RENDER` (sélection
+  par env, comme le port Mollie choisit fake/http). Reste à **ajouter `playwright`**
+  côté image de Job et à écrire l'adaptateur — **déploiement**, pas logique métier.
+- **Lien web vs PDF.** Les **deux** formats existent au contrat ; en dev le **lien**
+  (HTML autonome) fait foi, le **PDF** est un stub. Le produit tranchera l'usage
+  (partage d'un lien présigné vs pièce jointe PDF) sans toucher à la composition.
+- **Le compte invité (4.6) consultera la progression _en direct_.** Le bilan
+  **exporté** (4.4) sert le client **sans l'app** ; l'**accès vivant** (fenêtre
+  lecture seule sur le cheval partagé) est le lot **4.6** — les deux coexistent
+  (Spec §6/§9.5).
+- **Vidéo attachée à un record (post-v1, Spec §6.4).** Non capturée ; le bilan
+  reste un registre de **performance** (santé/vétérinaire hors périmètre).
+- **Période ouverte `to = null`.** Le niveau démontré/maîtrisée hérite du choix
+  conservateur de 3.2 (dernier point de la courbe, pas `Date.now()`) : un cheval
+  inactif conserve sa dernière maîtrisée affichée. À reconsidérer si un signal
+  « hors de forme » devient souhaitable (déjà noté en 3.2).
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Générer un bilan soigné avec sélection de période** (PDF/lien), **6 sections** (§6.2) | e2e `progression-report.spec.ts` : `POST …/progression-report` → sections `identité`/`niveau_démontré`/`performance_concours`/`régularité`/`trajectoire`/`période` + **artefact** (`file://`, taille > 0) ; rendu HTML autonome (`render-bilan-html.spec.ts`) | ✅ |
+| **Objective + `live` only** : aucun ressenti/note ; **`déclaratif` exclu** | e2e : déclaratif@140 **exclu** de la régularité, du concours et du niveau démontré ; unité `render-bilan-html` : **0** occurrence de ressenti/difficulté/énergie | ✅ |
+| **Curation** : changer période/indicateurs change le rapport, **sans altérer la donnée** | e2e : période passée ⇒ rapport vide, séances **intactes** (relecture = 6) ; indicateur décoché ⇒ section absente ; unité `compose-bilan.spec` (curation + non-mutation) | ✅ |
+| **Réutilise la maîtrisée (3.2) & la régularité (`shared`, testée)** — pas de recalcul divergent | e2e : `niveau_démontré.hauteur_maîtrisée` **==** `GET …/metrics` `maîtrise.courante` (110) ; `regularite.test.ts` (8) ; **une seule** implémentation | ✅ |
+| **Refusé au gratuit** (garde 4.1, capacité `bilan_progression`) | e2e : gratuit → **403** ; sans jeton → 401 ; cheval étranger → 404 ; app `LockedFeature` grise (verrou 4.2) | ✅ |
+| **Régularité pure dans `shared`** (`live` only, Plat inclus, fenêtre de curation) | `regularite.test.ts` : déclaratif exclu, Plat compté, fréquence, semaines actives + série, curation | ✅ |
+| **Pipeline HTML→PDF Playwright** ; local/stub en dev ; Job/Object Storage différés | port `BILAN_RENDER` + `LocalBilanRender` (HTML → `file://`) ; `lien` réel, `pdf` `stub: true` (e2e) ; adaptateur prod branchable sans toucher au service | ✅ (dev) |
+| Aucun type d'API dupliqué ; Zod au bord | DTO/calc de `@hpt/shared` (`BilanProgression`, `régularité`) ; sortie validée par `bilanProgressionSchema` ; `RégularitéBilan ≡ RégularitéBilanDto` (`expectTypeOf`) | ✅ |
+| Pas de débordement de périmètre | **0** IA (4.5), **0** compte invité (4.6), **0** refonte de l'aperçu démo (3.5) ; bilan **multi-séances** distinct des 3 bilans (§8) | ✅ |
+| `pnpm lint` | `biome check .` (341 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **172 (shared, +14)** + **41 (api, +14 : 9 compose, 5 render)** + **176 (app, +4 period-presets)** | ✅ 389/389 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 138 (lots antérieurs) + **6 (progression-report 4.4)** | ✅ 144/144 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 4.4 inclus) — **aucune migration** en 4.4 | ✅ |
+
+---

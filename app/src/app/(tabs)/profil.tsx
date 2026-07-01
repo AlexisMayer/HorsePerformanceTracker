@@ -115,6 +115,25 @@ export default function ProfilScreen() {
         </Card>
       </Pressable>
 
+      {/* Bilan de progression (lot 4.4) — livrable client premium/pro ; l'écran gère
+          le grisage/paywall (verrou 4.2). Point d'entrée neutre depuis le Profil. */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Bilan de progression"
+        onPress={() => router.push('/progression-report')}
+        style={({ pressed }) => pressed && styles.pressed}
+      >
+        <Card>
+          <View style={styles.rowBetween}>
+            <View style={styles.rowLeft}>
+              <Ionicons name="document-text" size={20} color={colors.primary} />
+              <Text variant="bodyStrong">Bilan de progression</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+          </View>
+        </Card>
+      </Pressable>
+
       {account && !account.email_verified ? (
         <Card style={styles.noticeCard}>
           <Text variant="bodyStrong">Vérifie ton e-mail</Text>

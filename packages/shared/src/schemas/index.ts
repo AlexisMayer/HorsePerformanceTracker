@@ -11,6 +11,7 @@ export * from './feed';
 export * from './historique';
 export * from './metrics';
 export * from './obstacle';
+export * from './progression-report';
 export * from './referentiel';
 export * from './seance';
 export * from './sharing';

@@ -16,10 +16,15 @@ import { MetricsService } from './metrics.service';
  * erreur de domaine propre (la propriété/404 vient de `sessions`/`horses`). Tout
  * le **calcul** vit dans `shared` (hauteur maîtrisée §10, détection record/jalon
  * de 3.1) ; ce module ne fait qu'**orchestrer** (Architecture §2).
+ *
+ * `MetricsService` est **exporté** (lot 4.4) : le module `progression-report`
+ * (bilan de progression) le consomme pour **réutiliser** la hauteur maîtrisée +
+ * sa courbe — via le service exposé, sans recalcul (Architecture §2/§3).
  */
 @Module({
   imports: [PassportModule, SessionsModule],
   controllers: [MetricsController],
   providers: [MetricsService],
+  exports: [MetricsService],
 })
 export class MetricsModule {}
