@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { pointMaîtriseSchema } from './metrics';
-import { niveauChevalSchema } from './referentiel';
+import { niveauChevalSchema, tendanceSchema } from './referentiel';
 
 /**
  * Contrats `shared` du **bilan de progression** (lot 4.4, Spec §6, module
@@ -152,11 +152,6 @@ export const régularitéBilanSchema = z.object({
 });
 
 export type RégularitéBilanDto = z.infer<typeof régularitéBilanSchema>;
-
-/** Sens de la trajectoire de maîtrise sur la période (émotion §6.1). */
-export const tendanceSchema = z.enum(['hausse', 'stable', 'baisse']);
-
-export type Tendance = z.infer<typeof tendanceSchema>;
 
 /**
  * §6.2 (5) **Trajectoire** — **courbe de hauteur maîtrisée** (réutilisée de

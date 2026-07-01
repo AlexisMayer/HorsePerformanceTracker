@@ -3,6 +3,8 @@ import {
   type AccèsInvitéInviterDto,
   type AccèsInvitéSortie,
   accèsInvitéSortieSchema,
+  type BenchmarkListeDto,
+  type BenchmarkSérieDto,
   type ChevalPartagé,
   chevalPartagéSchema,
   type FeedQuery,
@@ -236,6 +238,31 @@ export class GuestAccessService {
   async heatmapForGuest(guestId: string, chevalId: string): Promise<HeatmapDto> {
     const accès = await this.assertAccèsActif(guestId, chevalId);
     return this.analytics.heatmap(accès.compte_pro_id, chevalId);
+  }
+
+  /**
+   * **Benchmark (5.2) — liste** des combinaisons benchmarkables du cheval partagé,
+   * lecture seule scopée. Comme la heatmap : portée = octroi (le propriétaire est
+   * pro), on **réutilise** `AnalyticsService` scopé au **propriétaire**.
+   */
+  async benchmarkListForGuest(guestId: string, chevalId: string): Promise<BenchmarkListeDto> {
+    const accès = await this.assertAccèsActif(guestId, chevalId);
+    return this.analytics.benchmarkList(accès.compte_pro_id, chevalId);
+  }
+
+  /**
+   * **Benchmark (5.2) — série** d'une combinaison identifiée pour le cheval partagé,
+   * lecture seule scopée. La combinaison est scopée au **propriétaire**
+   * (`findForAccount`) : un `combinaison_ref` étranger → 404 (l'invité ne voit que
+   * les identités du cheval partagé).
+   */
+  async benchmarkSérieForGuest(
+    guestId: string,
+    chevalId: string,
+    combinaisonRef: string,
+  ): Promise<BenchmarkSérieDto> {
+    const accès = await this.assertAccèsActif(guestId, chevalId);
+    return this.analytics.benchmarkSérie(accès.compte_pro_id, chevalId, combinaisonRef);
   }
 
   // ── Interne ────────────────────────────────────────────────────────────────

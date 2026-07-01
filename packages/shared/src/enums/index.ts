@@ -5,3 +5,4 @@ export * from './hauteurs';
 export * from './jalon';
 export * from './obstacle';
 export * from './seance';
+export * from './tendance';

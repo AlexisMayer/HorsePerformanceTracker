@@ -1,6 +1,8 @@
 import {
   type AccèsInvitéAccepterDto,
   accèsInvitéAccepterSchema,
+  type BenchmarkListeDto,
+  type BenchmarkSérieDto,
   type ChevalPartagé,
   type FeedQuery,
   type Fil,
@@ -107,5 +109,24 @@ export class GuestConsultationController {
     @Param('id', ParseUUIDPipe) chevalId: string,
   ): Promise<HeatmapDto> {
     return this.guestAccess.heatmapForGuest(user.id, chevalId);
+  }
+
+  /** **Benchmark (5.2) — liste** du cheval partagé — lecture seule scopée. */
+  @Get('horses/:id/benchmark')
+  benchmarkList(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) chevalId: string,
+  ): Promise<BenchmarkListeDto> {
+    return this.guestAccess.benchmarkListForGuest(user.id, chevalId);
+  }
+
+  /** **Benchmark (5.2) — série** d'une combinaison du cheval partagé — lecture seule scopée. */
+  @Get('horses/:id/benchmark/:combinaisonRef')
+  benchmarkSérie(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) chevalId: string,
+    @Param('combinaisonRef', ParseUUIDPipe) combinaisonRef: string,
+  ): Promise<BenchmarkSérieDto> {
+    return this.guestAccess.benchmarkSérieForGuest(user.id, chevalId, combinaisonRef);
   }
 }
