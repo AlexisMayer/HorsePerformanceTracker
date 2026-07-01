@@ -27,7 +27,12 @@ export interface HistoryApi {
   getHistory(chevalId: string, params?: HistoryQueryParams): Promise<PageHistorique>;
 }
 
-export function createHistoryApi(client: ApiClient): HistoryApi {
+/**
+ * `basePath` (lot 4.6) sélectionne la **portée** : `/horses` (défaut) ou
+ * `/guest-access/horses` (invité — même historique paginé, scopé par l'octroi).
+ * Le suffixe `…/sessions/history` est identique des deux côtés (`read-scope`).
+ */
+export function createHistoryApi(client: ApiClient, basePath = '/horses'): HistoryApi {
   return {
     getHistory: (chevalId, params = {}) => {
       const search = new URLSearchParams();
@@ -35,7 +40,7 @@ export function createHistoryApi(client: ApiClient): HistoryApi {
       if (params.limit != null) search.set('limit', String(params.limit));
       const qs = search.toString();
       return client.request<PageHistorique>(
-        `/horses/${chevalId}/sessions/history${qs ? `?${qs}` : ''}`,
+        `${basePath}/${chevalId}/sessions/history${qs ? `?${qs}` : ''}`,
         { method: 'GET' },
       );
     },

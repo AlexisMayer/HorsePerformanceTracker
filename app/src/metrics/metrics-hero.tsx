@@ -6,6 +6,8 @@ import { useMetrics } from './use-metrics';
 
 export interface MetricsHeroProps {
   chevalId: string | null;
+  /** Portée de lecture (lot 4.6) : `/horses` (défaut) ou `/guest-access/horses` (invité). */
+  basePath?: string;
 }
 
 /**
@@ -20,8 +22,8 @@ export interface MetricsHeroProps {
  * **ne rend rien** et laisse l'invitation du fil opérer (§7). Dès qu'un record ou
  * une maîtrise existe, les héros apparaissent.
  */
-export function MetricsHero({ chevalId }: MetricsHeroProps) {
-  const { data } = useMetrics(chevalId);
+export function MetricsHero({ chevalId, basePath }: MetricsHeroProps) {
+  const { data } = useMetrics(chevalId, basePath);
   if (!data) return null;
 
   const aDesHéros =

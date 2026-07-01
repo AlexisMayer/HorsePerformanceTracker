@@ -1,6 +1,7 @@
 import type { ChevalModifierDto, ChevalSortie } from '@hpt/shared';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, Alert, StyleSheet, View } from 'react-native';
+import { GuestInvitesSection } from '../../guest-access';
 import {
   HorseForm,
   type HorseFormSubmit,
@@ -185,6 +186,10 @@ export default function EditHorseScreen() {
         error={update.error ? horseErrorMessage(update.error) : undefined}
         onSubmit={handleSubmit}
       />
+
+      {/* Comptes invité (lot 4.6) — partager ce cheval avec un client en lecture
+          seule (Pro ; grisé + invitation à l'upgrade sinon). Le serveur enforce. */}
+      <GuestInvitesSection chevalId={horse.id} />
 
       <View style={styles.actions}>
         <Button

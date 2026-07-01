@@ -2,6 +2,7 @@ import {
   NIVEAUX_CHEVAL,
   PROVENANCES,
   STATUTS_ABONNEMENT,
+  STATUTS_ACCÈS_INVITÉ,
   TIERS,
   TIERS_PAYANTS,
   TYPES_COMPTE,
@@ -37,3 +38,11 @@ export const obstacleTypeEnum = pgEnum('obstacle_type', TYPES_OBSTACLE);
  */
 export const abonnementTierEnum = pgEnum('abonnement_tier', TIERS_PAYANTS);
 export const abonnementStatutEnum = pgEnum('abonnement_statut', STATUTS_ABONNEMENT);
+
+/**
+ * Enum de l'**Accès invité** (lot 4.6) — réutilise le tuple figé
+ * `STATUTS_ACCÈS_INVITÉ` de `@hpt/shared` (Modèle §3, cycle `en_attente | actif |
+ * révoqué`). Jamais redéclaré ici : les libellés en base sont exactement ceux du
+ * domaine (alignement §2).
+ */
+export const accesInviteStatutEnum = pgEnum('acces_invite_statut', STATUTS_ACCÈS_INVITÉ);

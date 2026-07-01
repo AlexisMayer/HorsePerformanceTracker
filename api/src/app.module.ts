@@ -6,6 +6,7 @@ import { CombinationsModule } from './combinations/combinations.module';
 import { DatabaseModule } from './db/database.module';
 import { EntitlementsModule } from './entitlements/entitlements.module';
 import { FeedModule } from './feed/feed.module';
+import { GuestAccessModule } from './guest-access/guest-access.module';
 import { HealthModule } from './health/health.module';
 import { HorsesModule } from './horses/horses.module';
 import { MetricsModule } from './metrics/metrics.module';
@@ -28,6 +29,7 @@ import { SharingModule } from './sharing/sharing.module';
     ProgressionReportModule,
     AiBilanModule,
     AnalyticsModule,
+    GuestAccessModule,
   ],
 })
 export class AppModule {}

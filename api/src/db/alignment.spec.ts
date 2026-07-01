@@ -1,4 +1,5 @@
 import type {
+  AccèsInvité,
   BilanAugmenté,
   Cheval,
   CombinaisonRéutilisable,
@@ -10,6 +11,7 @@ import type {
 } from '@hpt/shared';
 import { describe, expectTypeOf, it } from 'vitest';
 import type {
+  accesInvite,
   bilanAugmente,
   cheval,
   combinaison,
@@ -107,5 +109,17 @@ describe('schéma Drizzle ↔ types `@hpt/shared` (alignement au niveau type)', 
     expectTypeOf<
       NullToOptional<typeof bilanAugmente.$inferSelect>
     >().toEqualTypeOf<BilanAugmenté>();
+  });
+
+  it('Accès invité', () => {
+    // Entité **spécifiée au Modèle §3** mais créée seulement en 4.6 (back-doc),
+    // comme le Bilan augmenté ⇒ **alignée** sur `@hpt/shared`. `token_hash` est
+    // une colonne **technique** (jeton d'invitation hashé, usage unique), hors
+    // Modèle de données ⇒ **exclue** de l'alignement (même posture que
+    // `idempotency_key` sur `Séance`). `invité_compte_id` est nullable en base
+    // (compte relié à l'acceptation) ⇒ optionnel dans le domaine (`NullToOptional`).
+    expectTypeOf<
+      NullToOptional<Omit<typeof accesInvite.$inferSelect, 'token_hash'>>
+    >().toEqualTypeOf<AccèsInvité>();
   });
 });

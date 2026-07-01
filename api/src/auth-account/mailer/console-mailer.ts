@@ -19,4 +19,8 @@ export class ConsoleMailer implements Mailer {
   async sendPasswordReset({ to, link }: MailMessage): Promise<void> {
     this.logger.log(`[password-reset] → ${to} · lien : ${link}`);
   }
+
+  async sendGuestInvitation({ to, link }: MailMessage): Promise<void> {
+    this.logger.log(`[guest-invitation] → ${to} · lien : ${link}`);
+  }
 }

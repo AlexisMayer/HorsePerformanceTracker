@@ -14,12 +14,12 @@ import { createMetricsApi } from './metrics-api';
  * suppression/édition de séance, 2.4, est donc reflétée par construction, comme le
  * fil 3.1). Même `staleTime` que le fil pour rester cohérent à l'écran.
  */
-export function useMetrics(chevalId: string | null) {
+export function useMetrics(chevalId: string | null, basePath = '/horses') {
   const { client, status, account } = useAuth();
-  const api = useMemo(() => createMetricsApi(client), [client]);
+  const api = useMemo(() => createMetricsApi(client, basePath), [client, basePath]);
 
   return useQuery({
-    queryKey: ['metrics', account?.id ?? null, chevalId],
+    queryKey: ['metrics', basePath, account?.id ?? null, chevalId],
     queryFn: () => api.getMetrics(chevalId as string),
     enabled: status === 'authenticated' && chevalId != null,
     staleTime: 15_000,

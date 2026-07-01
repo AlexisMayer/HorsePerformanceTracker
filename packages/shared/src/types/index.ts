@@ -1,3 +1,4 @@
+export * from './acces-invite';
 export * from './ai-bilan';
 export * from './champs-techniques';
 export * from './cheval';

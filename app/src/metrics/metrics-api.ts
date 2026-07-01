@@ -18,9 +18,13 @@ export interface MetricsApi {
   getMetrics(chevalId: string): Promise<Métriques>;
 }
 
-export function createMetricsApi(client: ApiClient): MetricsApi {
+/**
+ * `basePath` (lot 4.6) sélectionne la **portée** : `/horses` (défaut) ou
+ * `/guest-access/horses` (invité — mêmes héros, scopés par l'octroi, `read-scope`).
+ */
+export function createMetricsApi(client: ApiClient, basePath = '/horses'): MetricsApi {
   return {
     getMetrics: (chevalId) =>
-      client.request<Métriques>(`/horses/${chevalId}/metrics`, { method: 'GET' }),
+      client.request<Métriques>(`${basePath}/${chevalId}/metrics`, { method: 'GET' }),
   };
 }

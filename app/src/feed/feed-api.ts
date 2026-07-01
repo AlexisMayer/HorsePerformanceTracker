@@ -26,14 +26,19 @@ export interface FeedApi {
   getFeed(chevalId: string, params?: FeedQueryParams): Promise<Fil>;
 }
 
-export function createFeedApi(client: ApiClient): FeedApi {
+/**
+ * `basePath` (lot 4.6) sélectionne la **portée de lecture** : `/horses` (défaut,
+ * propriétaire) ou `/guest-access/horses` (invité — même fil, scopé par l'octroi,
+ * cf. `read-scope`). Le suffixe de route est identique des deux côtés.
+ */
+export function createFeedApi(client: ApiClient, basePath = '/horses'): FeedApi {
   return {
     getFeed: (chevalId, params = {}) => {
       const search = new URLSearchParams();
       if (params.before) search.set('before', params.before);
       if (params.limit != null) search.set('limit', String(params.limit));
       const qs = search.toString();
-      return client.request<Fil>(`/horses/${chevalId}/feed${qs ? `?${qs}` : ''}`, {
+      return client.request<Fil>(`${basePath}/${chevalId}/feed${qs ? `?${qs}` : ''}`, {
         method: 'GET',
       });
     },

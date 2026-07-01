@@ -7,6 +7,8 @@ import { useHeatmap } from './use-heatmap';
 
 export interface HeatmapViewProps {
   chevalId: string | null;
+  /** Portée de lecture (lot 4.6) : `/horses` (défaut) ou `/guest-access/horses` (invité). */
+  basePath?: string;
 }
 
 /**
@@ -20,8 +22,8 @@ export interface HeatmapViewProps {
  * obstacle (2.3). La heatmap est le **seul** contenu ici ; le **benchmark** (5.2)
  * s'ajoutera **dessous** dans une prochaine tranche.
  */
-export function HeatmapView({ chevalId }: HeatmapViewProps) {
-  const { data, isLoading, isError } = useHeatmap(chevalId);
+export function HeatmapView({ chevalId, basePath }: HeatmapViewProps) {
+  const { data, isLoading, isError } = useHeatmap(chevalId, basePath);
 
   if (!chevalId) {
     return (

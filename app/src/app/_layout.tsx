@@ -8,6 +8,12 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../auth';
 import { CombinationsProvider } from '../combinations';
 import { EntitlementsProvider } from '../entitlements';
+import {
+  GuestAccessProvider,
+  guestStateUnresolved,
+  shouldEnterGuestShell,
+  useGuestAccess,
+} from '../guest-access';
 import { HorsesProvider, useHorses } from '../horses';
 import { shouldEnterOnboarding } from '../onboarding';
 import { colors, FONT_ASSETS } from '../theme';
@@ -37,8 +43,10 @@ export default function RootLayout() {
           <EntitlementsProvider>
             <HorsesProvider>
               <CombinationsProvider>
-                <StatusBar style="dark" />
-                <RootNavigator />
+                <GuestAccessProvider>
+                  <StatusBar style="dark" />
+                  <RootNavigator />
+                </GuestAccessProvider>
               </CombinationsProvider>
             </HorsesProvider>
           </EntitlementsProvider>
@@ -51,6 +59,7 @@ export default function RootLayout() {
 function RootNavigator() {
   const { status } = useAuth();
   const { horses, isLoading: horsesLoading } = useHorses();
+  const { sharedHorses, isLoading: guestLoading } = useGuestAccess();
   const segments = useSegments();
   const router = useRouter();
 
@@ -58,9 +67,14 @@ function RootNavigator() {
     if (status === 'loading') return;
     const inAuthGroup = segments[0] === '(auth)';
     const inOnboarding = segments[0] === 'onboarding';
+    const inGuest = segments[0] === 'guest';
+    // Écran d'acceptation d'invitation (deep link) : il gère lui-même l'auth et
+    // l'atterrissage — la garde ne le redirige pas (sinon un invité pur serait
+    // bousculé vers l'onboarding « créer un cheval » avant d'avoir pu accepter).
+    const inGuestInvite = segments[0] === 'guest-invite';
 
     if (status === 'unauthenticated') {
-      if (!inAuthGroup) router.replace('/login');
+      if (!inAuthGroup && !inGuestInvite) router.replace('/login');
       return;
     }
     // Authentifié dans le groupe d'auth → rejoindre l'app.
@@ -68,10 +82,34 @@ function RootNavigator() {
       router.replace('/');
       return;
     }
-    // Nouvel utilisateur (aucun cheval) → tunnel d'onboarding : on en sort avec une
-    // récompense déjà vue (Spec §2), jamais sur un feed vide. On ne force jamais la
-    // *sortie* du tunnel (l'utilisateur le termine en atterrissant sur le feed).
+    // Acceptation d'invitation : laisser l'écran conclure (il route vers /guest).
+    if (inGuestInvite) return;
+    // Coquille invité (lot 4.6, Spec §9.5) : un **invité pur** (aucun cheval possédé
+    // + ≥ 1 accès partagé) atterrit sur la coquille invité en **sautant** la création
+    // de cheval — l'onboarding invité ne recrée jamais de cheval.
     if (
+      shouldEnterGuestShell({
+        authenticated: true,
+        horsesLoading,
+        horsesCount: horses.length,
+        guestLoading,
+        sharedHorsesCount: sharedHorses.length,
+        inGuest,
+      })
+    ) {
+      router.replace('/guest');
+      return;
+    }
+    // Ne pas trancher l'onboarding tant que l'état invité n'est pas résolu (évite
+    // d'envoyer un invité vers « créer un cheval » avant de savoir qu'il est invité).
+    if (guestStateUnresolved({ authenticated: true, horsesCount: horses.length, guestLoading })) {
+      return;
+    }
+    // Nouvel utilisateur **régulier** (aucun cheval, aucun accès partagé) → tunnel
+    // d'onboarding : on en sort avec une récompense déjà vue (Spec §2), jamais sur un
+    // feed vide. Un invité (accès partagé) en est **exclu** (coquille invité ci-dessus).
+    if (
+      sharedHorses.length === 0 &&
       shouldEnterOnboarding({
         authenticated: true,
         horsesLoading,
@@ -81,7 +119,7 @@ function RootNavigator() {
     ) {
       router.replace('/onboarding');
     }
-  }, [status, segments, router, horsesLoading, horses.length]);
+  }, [status, segments, router, horsesLoading, horses.length, guestLoading, sharedHorses.length]);
 
   return (
     <>
