@@ -3513,3 +3513,152 @@ en 3.4 et **attache la garde** premium/pro de 4.1. Strictement le lot 4.5 :
 | CI | job `ci` (sans DB) + job `db` (`migrate` 0→0007 + `verify`, e2e 4.5 inclus) | ✅ |
 
 ---
+
+## Lot 5.1 — Heatmap type × hauteur · 2026-07-01
+
+Ouverture de la **Phase 5 (Analytique)**. Premier morceau du module **`analytics`**
+(api) + agrégation pure dans **`shared`** + tranche **`app`** : la **heatmap type ×
+hauteur** (Spec §5.3, Modèle §9, UI/UX §6.5), cellules `type d'obstacle × hauteur`
+remplies selon le **taux de réussite** (vert plein → vide). Outil de **diagnostic
+premium**, **exact** grâce à la saisie par obstacle (2.3). `analytics` est une surface
+de **lecture/composition** : elle lit via le service `sessions` (jamais ses tables,
+Archi §1/§3) et **réutilise** les fonctions pures de `shared` — le **taux §7** posé en
+0.2. Strictement le lot 5.1 : **pas** le benchmark à combinaison constante (5.2), **pas**
+les comptes invité (4.6), **aucun** bilan (4.4/4.5), **rien** au set héros (3.2, livré).
+
+### Emplacement (décisions tranchées)
+
+- **`shared` (calc + DTO)** — le calcul vit ici, **une seule** implémentation (Archi
+  §2) : `calc/heatmap.ts` (`agrègeHeatmap` : liste de séances → matrice `(type ×
+  hauteur) → { taux, efforts_propres, efforts_totaux, n_obstacles }`, `types`/`hauteurs`
+  présents) ; `schemas/heatmap.ts` (DTO `HeatmapDto` + `CelluleHeatmapDto`, miroir Zod).
+  **Refactor ciblé de `calc/taux-reussite.ts`** : extraction de la brique
+  `effortsObstacle` (décomposition §7 numérateur `propres` / dénominateur `totaux`) —
+  **`tauxObstacleSimple`/`tauxCombinaison` en dérivent désormais** (comportement
+  identique, tests 0.2 verts) **et** la heatmap la réutilise. Une seule arithmétique du
+  §7, jamais réécrite.
+- **`api/src/analytics/`** — `analytics.service.ts` (compose via `SessionsService`,
+  projette `SéanceSortie → SéanceHeatmapInput`, agrège via `shared`, valide au bord),
+  `analytics.controller.ts` (`GET /horses/:id/heatmap`, garde JWT **+ garde
+  d'entitlement 4.1**), `analytics.module.ts` (importe `SessionsModule` +
+  `EntitlementsModule`, **exporte** `AnalyticsService` pour 4.6). Enregistré dans
+  `app.module.ts`. **Aucune** table, **aucune** écriture — même posture que `metrics`
+  (3.2) et `progression-report` (4.4).
+- **`app/src/analytics/`** — `heatmap-api.ts` (+ re-validation Zod au bord),
+  `use-heatmap.ts` (`useQuery`), `heatmap-format.ts` (helpers **purs** testés :
+  index/lecture O(1), aspect visuel vide/échec/rempli, libellés a11y),
+  `heatmap-grid.tsx` (grille lignes×colonnes, chiffres tabulaires, déroulable),
+  `heatmap-view.tsx` (états chargement/erreur/**vide = invitation**/données),
+  `heatmap-apercu.tsx` (esquisse grisée du verrou). L'onglet `(tabs)/analytique.tsx`
+  câble la vraie heatmap **derrière `LockedFeature`** (4.2), scopée au **cheval de
+  l'en-tête** (sélecteur réutilisé, 1.4).
+
+### Décisions tranchées (et pourquoi)
+
+- **Taux §7 au niveau effort, PAS la règle conservatrice §10.** La heatmap est un **taux
+  exact** (§9 « exacte »), pas la hauteur maîtrisée. Chaque obstacle est décomposé en
+  efforts : simple → `propres = répétitions − barres − refus`, `totaux = répétitions` ;
+  combinaison → `totaux = répétitions × nombre_d_éléments`, `propres = totaux − barres −
+  refus`. La cellule agrège `Σ propres / Σ totaux`. On **n'applique pas** le §10
+  (« combinaison comptée seulement si la ligne est sans faute ») : il appartient
+  **exclusivement** à la hauteur maîtrisée (3.2). Prouvé par un test dédié : une
+  combinaison fautée donne `5/6`, **pas** `0`.
+- **La décomposition en efforts, pas le ratio, est la brique partagée.** Un ratio
+  par-obstacle **ne s'agrège pas** (moyenne de ratios ≠ ratio des sommes). D'où
+  `effortsObstacle` (numérateur/dénominateur) exposé dans `shared` : la heatmap **somme**
+  les efforts §7 puis divise. `tauxObstacleSimple`/`tauxCombinaison` reposent maintenant
+  **sur cette même brique** → aucune divergence possible (au lieu de dupliquer
+  l'arithmétique dans `analytics`).
+- **Combinaison = sa propre ligne** (Modèle §9). Type-conteneur, agrégée sur **sa**
+  hauteur (valeur unique de la ligne), au dénominateur **× éléments** ; placée **en
+  dernière ligne** (ordre du référentiel). Jamais ventilée par élément (fautes au niveau
+  de la ligne, §0).
+- **Cellule = taux agrégé, + volume exposé.** Chaque cellule porte `efforts_propres`,
+  `efforts_totaux` (n efforts) et `n_obstacles` — lisibilité de **fiabilité** et surtout
+  moyen de **distinguer cellule vide vs taux nul** (voir ci-dessous).
+- **Cellule vide ≠ taux nul.** Une cellule n'existe dans `cellules` que si ≥ 1 obstacle
+  **calculable** y contribue → l'**absence** du couple `(type, hauteur)` = « pas de
+  donnée » (l'UI rend **« — »**) ; une cellule **présente à `taux = 0`** = 0 % (rouille
+  sobre). Deux états franchement distincts (test unit **et** e2e).
+- **Périmètre de source = obstacles d'entraînement `live`.** `agrègeHeatmap` filtre
+  `provenance === 'live'` (§2, `déclaratif` exclu) et n'agrège que les **`obstacles`**.
+  Le **Plat** (0 obstacle) et le **Concours** (des *tours*, sans type d'obstacle) ne
+  contribuent donc rien — **exclusion par construction**, confirmée par la projection api
+  qui ne mappe **jamais** les tours. La **couche contexte** (difficulté/ressenti/note)
+  n'est pas dans la forme d'entrée → **jamais agrégée** (Modèle §1, règle d'or) ; prouvé
+  e2e (une séance avec contexte ne change pas le taux).
+- **Gating = autorité serveur (Archi §5).** Le endpoint attache `@RequireCapacité('
+  analytique_diagnostic')` + `EntitlementGuard` (4.1) **après** `JwtAccessGuard` : un
+  **gratuit** est refusé en **403**. L'app **grise** via `LockedFeature`/`LockedOverlay`
+  (4.2, réutilisés tels quels) et déclenche l'upgrade **premium** ; elle n'est **pas** la
+  source de vérité. Le hook `useHeatmap` n'est monté que **dans le contenu débloqué** →
+  un gratuit ne déclenche jamais la requête (et le serveur la refuserait).
+- **Lecture per-cheval, réutilisable en aval.** `AnalyticsService.heatmap(compteId,
+  chevalId)` lit la heatmap **d'un cheval** et le module **exporte** le service :
+  structuré pour une **relecture en lecture seule scopée** par les comptes invité (4.6,
+  qui en dépendra) — **sans** construire le scoping ici.
+- **DTO depuis `shared`, Zod au bord** (`app → shared ← api`). `CelluleHeatmap` (calc) ≡
+  `CelluleHeatmapDto` (Zod) garanti par `expectTypeOf().toEqualTypeOf()` (comme
+  `Jalon`/`JalonDto` en 3.2). La réponse (scalaires/tableaux, **aucune `Date`**) est
+  **re-validée** au bord de l'app.
+
+### Écarts vs cadrage (consignés)
+
+- **Refactor de `taux-reussite.ts` (0.2) pour exposer `effortsObstacle`.** Le cadrage dit
+  « réutilise le taux §7 sans le réimplémenter » ; comme un ratio ne s'agrège pas, on a
+  dû **remonter la décomposition en efforts** comme brique partagée. Additif et
+  **iso-comportement** (les 7 tests `taux-reussite` de 0.2 restent verts sans
+  modification) — pas un changement de contrat, juste une factorisation qui **garantit**
+  l'unicité d'implémentation.
+- **Champs de cellule en `snake_case` français** (`efforts_propres`, `efforts_totaux`,
+  `n_obstacles`) : cohérent avec la convention de données (`nombre_d_éléments`,
+  `seance_id` du `Jalon`) et le transport JSON ; l'interface `calc` porte les mêmes noms
+  (type-equality calc ≡ DTO).
+- **Route `GET /horses/:id/heatmap`** (ressource sœur de `/metrics`) plutôt que
+  `/analytics/heatmap` : 5.2 ajoutera un **endpoint frère** (`…/benchmark`) sous la même
+  garde, dans le même module — pas de préfixe imposé prématurément.
+- **Aperçu grisé = esquisse factice** (déplacée de l'écran 4.2 vers `heatmap-apercu.tsx`).
+  Le vrai diagnostic étant refusé au gratuit côté serveur, l'aperçu ne divulgue **aucune**
+  donnée réelle — il donne à *deviner* la fonction (verrouillage = invitation, §7).
+- **Tests app = logique pure (Node)**, cohérent avec 1.4+ : `heatmap-format` (8) couvre le
+  formatage/lookup/aspect visuel/a11y ; la grille/les écrans sont prouvés par `tsc` **et**
+  l'**export Metro web** (route `/analytique` bundlée, 32 KB).
+
+### Points laissés ouverts (reports explicites)
+
+- **5.2 (benchmark à combinaison constante)** ajoutera une **section sous la heatmap** dans
+  `analytics` (endpoint frère `…/benchmark` sous la **même** garde `analytique_diagnostic`,
+  même écran Analytique). **Lançable indépendamment** de 5.1 (parallélisme roadmap).
+- **4.6 (comptes invité) dépend de 5.1** : l'endpoint analytique sera **relu en lecture
+  seule scopée** par l'invité — `AnalyticsService` est **exporté** à cette fin ; le scoping
+  invité n'est **pas** construit ici (Roadmap §Séquençage : 5.1 précède 4.6).
+- **Coût de recalcul** : comme `metrics` (3.2), `analytics` **recompose** depuis
+  l'historique `live` complet à chaque lecture (une passe O(n·obstacles)). Correct et
+  simple à l'échelle v1 ; un cache/incrémental sera utile si un cheval accumule des
+  centaines de séances.
+- **Échelle de couleur / seuil de contraste** (`celluleVisuel` : opacité `0.2 + 0.8·taux`,
+  crème dès `taux ≥ 0.55`) : heuristique lisible plein soleil, **tunable** en une source
+  si l'UX veut une rampe différente — sans toucher au calcul.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Heatmap correcte** : chaque cellule `(type, hauteur)` = taux §7 exact agrégé | e2e `analytics.spec.ts` (Oxer 100 : `5/6` sur 2 obstacles ; unités `heatmap.test.ts`) | ✅ |
+| **Combinaison = sa propre ligne**, dénominateur × éléments (cas **3 éléments**) | e2e + unit : Combinaison@120, `nombre_d_éléments=3` → `totaux=6`, `taux=5/6`, ligne `Combinaison` **en dernier** | ✅ |
+| **Cellule vide ≠ taux nul** (distinguées) | unit **+** e2e : Vertical@110 tout fauté → **présent** `taux=0`, `n_obstacles=1` ; Oxer@150 jamais travaillé → **absent** (« — ») | ✅ |
+| **Périmètre** : Plat, Concours et `déclaratif` **exclus** ; **contexte jamais agrégé** | unit (déclaratif/Plat/Concours) **+** e2e (Concours@130 & déclaratif@140 absents des colonnes ; séance **avec contexte** → taux inchangé) | ✅ |
+| **Agrégation dans `shared`** (pure, testée, une seule implémentation) réutilisant **§7** ; **pas** la règle §10 | `heatmap.ts` réutilise `effortsObstacle` (brique §7) ; test dédié « combinaison fautée → `5/6`, pas `0` » | ✅ |
+| **Grisée si gratuit** : endpoint **refusé au gratuit** (garde 4.1) ; app grise + upgrade | e2e : gratuit → **403** ; app `LockedFeature` (verrou 4.2) → `/upgrade?cap=analytique_diagnostic` | ✅ |
+| **Autorisation** : cheval d'un **autre compte** refusé ; non authentifié | e2e : intrus (premium) → **404** ; sans jeton → **401** ; propriétaire premium → 200 | ✅ |
+| Accessibilité (UI/UX §8) | cellules ≥ 44 px lisibles plein soleil, **chiffres tabulaires** (`StatText`), contraste AA+ (fond teinté sous texte pleine opacité), libellés a11y par case | ✅ |
+| Aucun type d'API dupliqué ; Zod au bord | DTO `@hpt/shared` (`HeatmapDto`, `CelluleHeatmapDto`) ; `CelluleHeatmap ≡ CelluleHeatmapDto` (`expectTypeOf`) ; réponse re-validée app | ✅ |
+| Pas de débordement de périmètre | **0** benchmark (5.2), **0** compte invité (4.6), **0** bilan ; heatmap **hors set héros** (Feed 3.2 intact) ; garde (4.1)/verrou (4.2) **réutilisés** | ✅ |
+| `pnpm lint` | `biome check .` (381 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **194 (shared, +17 : heatmap calc 12, schema 5)** + 54 (api) + **187 (app, +8 heatmap-format)** | ✅ 435/435 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** OK (`/analytique` bundlé) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 151 (lots antérieurs) + **6 (analytics 5.1)** | ✅ 157/157 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 5.1 inclus) — **aucune migration** en 5.1 | ✅ |
+
+---
