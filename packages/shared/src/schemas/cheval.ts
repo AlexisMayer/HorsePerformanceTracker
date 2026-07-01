@@ -78,7 +78,7 @@ export const chevalSortieSchema = z.object({
   hauteur_de_référence: z.number(),
   âge: z.number().nullable(),
   race: z.string().nullable(),
-  archivé: z.boolean(),
+  archivé: z.boolean().default(false),
 });
 
 export type ChevalSortie = z.infer<typeof chevalSortieSchema>;
