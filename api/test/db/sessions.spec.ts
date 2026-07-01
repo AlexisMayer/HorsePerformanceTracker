@@ -375,3 +375,55 @@ describe('autorisation (isolation entre comptes)', () => {
       .expect(404);
   });
 });
+
+describe('cheval archivé = lecture seule (lot 4.3, Spec §9.2)', () => {
+  it('écriture de séance refusée (409) sur un cheval archivé ; lecture toujours possible', async () => {
+    const a = await registerAndLogin('s-archive@hpt.test');
+    const chevalId = await createHorse(a, 'Archivé');
+
+    // Une séance enregistrée **tant que le cheval est actif**.
+    const s1 = await (await http())
+      .post(`/horses/${chevalId}/sessions`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .send({ type: 'Plat', idempotency_key: randomUUID() })
+      .expect(201);
+
+    // Archivage → lecture seule.
+    await (await http())
+      .post(`/horses/${chevalId}/archive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+
+    // Lecture : l'historique reste consultable (figé, non purgé).
+    const list = await (await http())
+      .get(`/horses/${chevalId}/sessions`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    expect(list.body).toHaveLength(1);
+    await (await http())
+      .get(`/sessions/${s1.body.id}`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+
+    // Écriture : création / édition / suppression de séance **refusées** (409).
+    await (await http())
+      .post(`/horses/${chevalId}/sessions`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .send({ type: 'Plat', idempotency_key: randomUUID() })
+      .expect(409);
+    await (await http())
+      .patch(`/sessions/${s1.body.id}`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .send({ type: 'Plat' })
+      .expect(409);
+    await (await http())
+      .delete(`/sessions/${s1.body.id}`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(409);
+
+    // La séance existe toujours (aucune écriture n'a abouti).
+    expect(
+      await count('SELECT count(*)::text AS n FROM seance WHERE cheval_id = $1', [chevalId]),
+    ).toBe(1);
+  });
+});

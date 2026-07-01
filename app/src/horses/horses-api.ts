@@ -19,6 +19,10 @@ export interface HorsesApi {
   create(dto: ChevalCréerDto): Promise<ChevalSortie>;
   update(id: string, dto: ChevalModifierDto): Promise<ChevalSortie>;
   remove(id: string): Promise<void>;
+  /** Archive un cheval (lot 4.3) — lecture seule, hors quota, réversible. */
+  archive(id: string): Promise<ChevalSortie>;
+  /** Désarchive un cheval (lot 4.3) — quota-gardé côté serveur (403 si plafond atteint). */
+  unarchive(id: string): Promise<ChevalSortie>;
 }
 
 export function createHorsesApi(client: ApiClient): HorsesApi {
@@ -29,5 +33,7 @@ export function createHorsesApi(client: ApiClient): HorsesApi {
     update: (id, dto) =>
       client.request<ChevalSortie>(`/horses/${id}`, { method: 'PATCH', body: dto }),
     remove: (id) => client.request<void>(`/horses/${id}`, { method: 'DELETE' }),
+    archive: (id) => client.request<ChevalSortie>(`/horses/${id}/archive`, { method: 'POST' }),
+    unarchive: (id) => client.request<ChevalSortie>(`/horses/${id}/unarchive`, { method: 'POST' }),
   };
 }

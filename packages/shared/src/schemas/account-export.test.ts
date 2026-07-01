@@ -34,6 +34,7 @@ describe('accountExportSchema (portabilité)', () => {
           hauteur_de_référence: 110,
           âge: null,
           race: null,
+          archivé: false,
           seances: [
             {
               id: 's1',

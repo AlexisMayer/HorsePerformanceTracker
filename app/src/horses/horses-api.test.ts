@@ -29,6 +29,7 @@ const SAMPLE: ChevalSortie = {
   hauteur_de_référence: 110,
   âge: 8,
   race: null,
+  archivé: false,
 };
 
 describe('createHorsesApi', () => {
@@ -64,5 +65,21 @@ describe('createHorsesApi', () => {
     const { client, request } = fakeClient();
     await createHorsesApi(client).remove('h1');
     expect(request).toHaveBeenCalledWith('/horses/h1', { method: 'DELETE' });
+  });
+
+  it('archive → POST /horses/:id/archive (lot 4.3)', async () => {
+    const { client, request } = fakeClient();
+    request.mockResolvedValueOnce({ ...SAMPLE, archivé: true });
+    const result = await createHorsesApi(client).archive('h1');
+    expect(request).toHaveBeenCalledWith('/horses/h1/archive', { method: 'POST' });
+    expect(result.archivé).toBe(true);
+  });
+
+  it('unarchive → POST /horses/:id/unarchive (lot 4.3)', async () => {
+    const { client, request } = fakeClient();
+    request.mockResolvedValueOnce({ ...SAMPLE, archivé: false });
+    const result = await createHorsesApi(client).unarchive('h1');
+    expect(request).toHaveBeenCalledWith('/horses/h1/unarchive', { method: 'POST' });
+    expect(result.archivé).toBe(false);
   });
 });

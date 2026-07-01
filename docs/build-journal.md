@@ -2993,3 +2993,187 @@ le verrou générique + le paywall + le checkout + l'autorité du tier.
 | CI | job `ci` (sans DB) + job `db` (`migrate` 0005 + `verify`) | ✅ |
 
 ---
+
+## Lot 4.3 — Archivage cheval · 2026-07-01
+
+Extension du module **`horses`** (2.1) : **archiver / désarchiver** un cheval
+(vendu/parti). Archiver le passe en **lecture seule** (fiche **et** séances),
+conserve son **historique**, le **sort de la liste active et du quota** ;
+**réversible** — désarchiver le ramène, **refusé** si cela dépasse le quota du
+tier. On **branche** l'archivage sur le décompte pré-câblé en 4.1 (`countActifs`)
+et on **réutilise** le verrou 4.2 (paywall) pour inviter à l'upgrade quand un
+désarchivage est bloqué. **Aucun** multi-chevaux/invité (4.6), **aucun** Mollie
+(4.2), **aucune** suppression RGPD (distincte). Strictement le lot 4.3.
+
+### Emplacement (décisions tranchées)
+
+- **Schéma + migration** : colonne `archivé` ajoutée à
+  `api/src/db/schema/cheval.ts` (`boolean('archive')`, **`NOT NULL DEFAULT
+  false`**) + migration **additive** `api/drizzle/0006_zippy_martin_li.sql`
+  (`ALTER TABLE "cheval" ADD COLUMN "archive" boolean DEFAULT false NOT NULL`).
+  Clé TS **accentuée** (`archivé`, alignement `shared`), colonne physique
+  **désaccentuée** (`archive`) — même convention que `hauteur_de_référence` /
+  `âge` (0.3). Le `DEFAULT false` rend le `ADD COLUMN NOT NULL` **sûr sur une
+  table peuplée** (contraste voulu avec `idempotency_key` en 2.2 qui exigeait une
+  table vide).
+- **Contrats `shared`** : `Cheval` (type domaine) et `chevalSortieSchema`
+  (projection détail/liste) portent `archivé: boolean` — l'app en a besoin pour
+  **exclure** l'archivé du sélecteur (UI/UX §5) et le ranger en **section
+  « archivés »**. `chevalCréerSchema` / `chevalModifierSchema` **inchangés** :
+  l'archivage passe par des **actions dédiées**, jamais par le PATCH générique
+  (cf. décision « quota-gardé »). `chevalExportSchema` (1.3) hérite `archivé`
+  gratuitement (`.extend`).
+- **Service `horses`** : `archive` / `unarchive` / `assertModifiable` ajoutés ;
+  `countActifs` filtré ; `update` gardé (lecture seule). **Controller** :
+  `POST /horses/:id/archive` et `/unarchive` (`@HttpCode(200)` — bascule d'état
+  d'une ressource existante, pas une création). Erreur `ChevalArchivéError` (409).
+- **Service `sessions`** : les **écritures** (create/update/remove) passent par
+  `horses.assertModifiable` (via un flag `forWrite` sur `loadOwned`) — refus 409
+  sur un cheval archivé ; les **lectures** gardent le chemin permissif `findOne`.
+- **Tranche `app`** : `horses-api` (`archive`/`unarchive`), `horses-context`
+  (mutations + partition `activeHorses`/`archivedHorses`, `currentHorse` = premier
+  **actif**), écrans `horses/index` (sections **Actifs** / **Archivés**) et
+  `horses/[id]` (actif → formulaire + **Archiver** ; archivé → fiche **lecture
+  seule** + **Désarchiver** + suppression), `error-messages` (409/403 + helper
+  `isQuotaBlocked`).
+
+### Décisions tranchées (et pourquoi)
+
+- **Statut d'archivage = un booléen sur `Cheval`** (et non une table/état séparé).
+  L'archivage est un **attribut réversible** de la fiche, pas une entité : une
+  colonne `archivé` est le minimum nécessaire (pas d'abstraction prématurée,
+  Archi §7). Le nom fidèle au domaine (`archivé`) préserve l'**alignement
+  `shared`** (la garde `alignment.spec.ts` passe sans exception : `boolean`
+  requis des deux côtés, aucune nullabilité à normaliser).
+- **Lecture seule via une garde d'écriture unique, `horses.assertModifiable`.**
+  L'état d'archivage reste **connu du seul `horses`** (§1/§3) ; `update` (fiche)
+  **et** `sessions` (séance) appellent la **même** garde, qui charge la fiche
+  scopée (404 sans fuite si étrangère) et lève `ChevalArchivéError` si archivé.
+  **409 Conflict** (et non 403/404) : la requête entre en conflit avec l'**état**
+  du cheval, pas avec les droits du compte (403 = tier) ni son existence (404).
+  Cohérent avec l'inviolabilité (Modèle §2) : l'archivé est **figé**.
+  Conséquence assumée : dans `sessions.create`, la garde passe **avant** le
+  chemin rapide d'idempotence → un re-`POST` sur un cheval archivé est **refusé**
+  (409), pas rejoué. C'est le comportement « aucune écriture/séance » attendu.
+- **Décompte actif réutilisé, non réimplémenté (4.1).** `countActifs` a reçu le
+  **seul** changement pré-câblé par 4.1 : `WHERE archivé = false` (`and(eq(
+  compte_id), eq(archivé, false))`). Le gating (garde de capacité, `assertPeutCréer`)
+  est **inchangé** : un cheval archivé **sort mécaniquement du quota** sans qu'une
+  règle de tier soit touchée. C'est exactement le point d'ancrage nommé au journal
+  4.1 (« il suffira d'ajouter `WHERE archivé = false` ici »).
+- **Désarchivage quota-gardé (garde 4.1).** Réintégrer un cheval à l'actif revient
+  à **créer une place** : `unarchive` appelle donc `assertPeutCréer(tier, 'chevaux',
+  countActifs)` — la **même** garde que la création. `countActifs` exclut le cheval
+  encore archivé, donc le plafond porte bien sur l'état **après** désarchivage. Un
+  gratuit/premium (quota 1) qui a déjà 1 cheval actif ne peut **pas** en désarchiver
+  un second → 403 : **pas de contournement** de la limite via archive/désarchive.
+  L'**archivage**, lui, n'est **jamais** quota-gardé (il ne fait que **réduire**
+  l'actif).
+- **Résolution du label « (pro) » (tension roadmap ↔ Spec, tranchée).**
+  L'**action d'archivage n'est pas réservée au pro** : la **Spec §9.2 ne la gate
+  pas**, et un cavalier gratuit qui vend son **unique** cheval doit pouvoir
+  l'archiver. Le « (pro) » de la roadmap reflète le **contexte multi-chevaux** de
+  l'archivage et son **interaction quota** (dép. 4.1) — pas une réserve d'accès.
+  La **garde** porte donc sur le **désarchivage** (quota), **pas** sur l'archivage.
+  Ni `archive` ni `unarchive` ne portent `@RequireCapacité` : la seule barrière est
+  le **quota** au désarchivage (autorité serveur). *(Si le dev voulait une réserve
+  pro **stricte** sur l'archivage, c'est le point à corriger — voir points ouverts.)*
+- **Archivage ≠ suppression ; suppression d'un archivé autorisée.** Aucune purge à
+  l'archivage (l'historique reste consultable). La **suppression** (RGPD, 2.1)
+  **reste permise** même sur un cheval archivé : c'est l'**échappatoire** (sinon un
+  cheval vendu serait piégé — ni éditable ni supprimable). La lecture seule protège
+  l'**intégrité de la trace**, pas le cycle de vie de la fiche → `remove` **non
+  gardé** (décision consignée).
+- **`list` renvoie tout ; l'app partitionne.** `GET /horses` renvoie **actifs +
+  archivés** (chacun portant `archivé`) en **un** aller-retour ; le contexte app
+  dérive `activeHorses`/`archivedHorses` et `currentHorse = activeHorses[0]`. Le
+  **sélecteur** (1.4/2.1) exclut donc l'archivé **sans changement** (il lit
+  `currentHorse`). Pas de second endpoint (surface minimale, §7-Archi).
+- **Verrou 4.2 réutilisé pour l'invitation à l'upgrade.** Un désarchivage refusé
+  (403) affiche, sous le message, un bouton **« Passer au Pro »** routant vers le
+  paywall existant `/upgrade?cap=multi_chevaux` (la matrice 4.2 mappe
+  `multi_chevaux → pro`). Verrouillage = invitation (UI/UX §7), **sans** refaire le
+  paywall ni la garde.
+
+### Écarts vs cadrage (consignés)
+
+- **Touche à `shared`** (type `Cheval` + `chevalSortieSchema`) — **additif**, aucun
+  contrat existant modifié ; le dual-build ESM+CJS embarque `archivé`. Les DTO
+  d'entrée (`créer`/`modifier`) sont **volontairement** laissés intacts pour que
+  l'archivage reste une **action dédiée** (garde de quota non contournable par PATCH).
+- **`@HttpCode(200)` sur archive/unarchive** (au lieu du 201 par défaut de `@Post`
+  Nest) : ces routes **basculent l'état** d'une ressource existante et renvoient la
+  fiche, pas une création à un nouveau URI → 200 est le statut juste.
+- **Seeds/tests des lots antérieurs** : aucun `INSERT INTO cheval` direct n'a eu à
+  changer (le `DEFAULT false` couvre les seeds). `schema.spec.ts` liste désormais
+  la colonne `archive` (vérifiée présente) ; `account-export.test.ts` et
+  `schemas.test.ts` ajoutent `archivé` à leurs littéraux de fiche parsés.
+- **Suppression d'un cheval archivé autorisée** (cf. décision ci-dessus) — écart
+  d'interprétation possible si « lecture seule » se voulait **absolu** ; tranché en
+  faveur de l'échappatoire RGPD, consigné.
+
+### Points laissés ouverts (reports explicites)
+
+- **Confirmation « archivage non réservé au pro » (dev).** La Spec §9.2 ne gate pas
+  l'archivage ; on l'a laissé **ouvert à tous les tiers**, seul le **désarchivage**
+  est quota-gardé. **À confirmer par le dev** : si une réserve **pro stricte** sur
+  l'action d'archiver est voulue (lecture « roadmap » du « (pro) »), il suffira
+  d'attacher `@RequireCapacité('multi_chevaux')` au `POST …/archive` — la garde 4.1
+  est prête. En l'état, ce **n'est pas** fait (fidélité à la Spec).
+- **Interaction 4.6 (comptes invité).** Archiver un cheval **porteur d'invités**
+  (pro, 4.6 — non construit) : l'accès invité deviendra la **lecture seule d'un
+  cheval lecture seule** (l'invité ne saisit déjà rien, §9.5). La bascule fine
+  (notifier l'invité, geler l'écriture côté coach déjà couverte par
+  `assertModifiable`) sera **câblée en 4.6**, quand l'accès invité existera. Rien à
+  faire ici.
+- **Désarchivage en lot / réactivation guidée** : hors périmètre ; l'UI actuelle
+  agit fiche par fiche.
+- **Métriques/feed de l'archivé** : **figés** (aucun recalcul déclenché par
+  l'archivage) — conforme (l'archivé est en lecture, rien n'est ré-agrégé).
+
+### Compte rendu — vérifier la DoD
+
+Backend (garde serveur) + tranche app. **Parcours de preuve** :
+
+1. **Archiver sort de la liste active et du quota** (gratuit, quota 1) :
+   `POST /horses` (H1, 201) → `POST /horses` (H2) **403** (plafond) →
+   `POST /horses/H1/archive` **200** (`archivé:true`) → `POST /horses` (nouveau)
+   **201** (place libérée). *(e2e `horses.spec.ts` › archivage)*
+2. **Archivé = lecture seule** : `PATCH /horses/H1` **409** ; `POST
+   /horses/H1/sessions` **409** ; `PATCH`/`DELETE /sessions/:id` **409** ; mais
+   `GET /horses/H1/sessions` **200** (historique conservé). *(e2e `horses.spec.ts`
+   + `sessions.spec.ts`)*
+3. **Réversible, quota-gardé** : `POST /horses/H1/unarchive` **200** dans le quota ;
+   **403** au-delà (un 2ᵉ actif déjà présent) ; **200** en pro (illimité).
+   *(e2e `horses.spec.ts`)*
+4. **App** : sélecteur ignore les archivés (`currentHorse` = 1ᵉʳ actif) ; écran
+   « Mes chevaux » range Actifs / Archivés ; fiche archivée en lecture seule avec
+   **Désarchiver** (→ upgrade Pro si 403).
+
+Commandes : `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build` (tous verts,
+sans DB) ; `pnpm --filter @hpt/api db:verify` exécute les e2e (Postgres requis,
+**job `db` de la CI** — Docker indisponible dans ce bac à sable, comme noté depuis
+0.1/0.3).
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Archiver sort de la liste active et du quota** ; historique conservé | e2e : gratuit au plafond → archive → création **autorisée** (place libérée) ; `GET …/sessions` reste **200** | ✅ (job `db`) |
+| **Réversible** : désarchiver ramène ; **refusé si dépasse le quota** (garde 4.1) | e2e : unarchive **200** dans le quota ; **403** au-delà (H reste archivé) ; **200** en pro | ✅ (job `db`) |
+| **Archivé = lecture seule** : aucune écriture/séance | e2e : `PATCH /horses/:id` **409** ; `POST …/sessions`, `PATCH`/`DELETE /sessions/:id` **409** ; `count(seance)` inchangé | ✅ (job `db`) |
+| **Décompte actif** : après archivage, un nouveau cheval passe ; après désarchivage au-delà, refus | e2e (mêmes scénarios) ; `countActifs` filtre `archivé = false` | ✅ (job `db`) |
+| **Archivage non gaté par le tier** ; **désarchivage** gardé | archive **sans** `@RequireCapacité` (gratuit OK) ; unarchive → `assertPeutCréer` (4.1) | ✅ |
+| **Scoping** : archiver/désarchiver le cheval d'un autre → 404 sans fuite | e2e : B sur le cheval de A → **404** (archive **et** unarchive) | ✅ (job `db`) |
+| **Statut d'archivage projeté** (app exclut du sélecteur, range en « archivés ») | `chevalSortieSchema.archivé` (test `schemas.test.ts`) ; app `activeHorses`/`archivedHorses` ; `HorseSelector` = actif | ✅ |
+| **Verrou 4.2 réutilisé** pour l'upgrade au désarchivage bloqué | fiche archivée : 403 → bouton « Passer au Pro » → `/upgrade?cap=multi_chevaux` | ✅ |
+| Aucun type d'API dupliqué ; DTO `shared` | `Cheval`/`ChevalSortie` de `@hpt/shared` (api + app) ; actions dédiées, DTO create/modifier intacts | ✅ |
+| Migration `0006` **additive & sûre** | `ADD COLUMN … boolean DEFAULT false NOT NULL` (backfill par défaut) ; `schema.spec.ts` vérifie `archive` | ✅ (job `db`) |
+| `pnpm lint` | `biome check .` (319 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) ; alignement `Cheval` (+`archivé`) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **158 (shared)** + **27 (api)** + **172 (app, +2 horses-api : archive/unarchive)** | ✅ 357/357 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (Postgres requis) | e2e `horses.spec.ts` (+archivage : quota, lecture seule, réversible, scoping) + `sessions.spec.ts` (+séance refusée sur archivé) | ⚠️ **job `db` CI** (Docker absent du bac à sable) |
+| CI | job `ci` (sans DB) + job `db` (`migrate` 0→**0006** + `verify`) | ✅ posé |
+
+---

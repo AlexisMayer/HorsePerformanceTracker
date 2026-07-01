@@ -69,6 +69,13 @@ function uniqueRefs(obstacles: ObstacleCréerDto[] | undefined): string[] {
  * de fuite). Aucune métrique calculée ici : on **persiste** la provenance ;
  * l'exclusion du `déclaratif` des agrégats est l'affaire de `metrics` (3.2).
  *
+ * **Cheval archivé = lecture seule (lot 4.3, Spec §9.2)** : les **écritures** de
+ * séance (création/édition/suppression) passent par `horses.assertModifiable` et
+ * sont **refusées** (409) sur un cheval archivé — l'historique reste **figé et
+ * consultable** (les **lectures** empruntent, elles, le chemin permissif
+ * `findOne`). L'état d'archivage n'est jamais lu ici : il reste **connu du seul
+ * `horses`**.
+ *
  * **Dépend de `combinations`** (2.5) : à l'instanciation d'un obstacle
  * Combinaison portant une `combinaison_ref`, le service valide la propriété de la
  * ref et **copie `nombre_d_éléments`** inline via `CombinationsService` (jamais en
@@ -93,8 +100,10 @@ export class SessionsService {
    * d'unicité (course concurrente).
    */
   async create(compteId: string, chevalId: string, dto: SéanceCréerDto): Promise<SéanceSortie> {
-    // Propriété du cheval (lève ChevalNotFoundError → 404 si étranger au compte).
-    await this.horses.findOne(compteId, chevalId);
+    // Propriété **et modifiabilité** du cheval : lève ChevalNotFoundError → 404 si
+    // étranger, ChevalArchivéError → 409 si **archivé** (lecture seule, lot 4.3 —
+    // aucune saisie sur un cheval archivé, cohérent avec l'inviolabilité §2).
+    await this.horses.assertModifiable(compteId, chevalId);
 
     // Chemin rapide : un réessai (même clé) renvoie la séance existante — sans
     // re-valider les refs ni re-compter l'usage (idempotence stricte).
@@ -228,7 +237,8 @@ export class SessionsService {
    * par cette route.
    */
   async update(compteId: string, seanceId: string, dto: SéanceModifierDto): Promise<SéanceSortie> {
-    await this.loadOwned(compteId, seanceId);
+    // Écriture : le cheval doit être **modifiable** (refus 409 si archivé, 4.3).
+    await this.loadOwned(compteId, seanceId, true);
 
     // Instanciation à l'édition : on revalide les refs et recopie
     // `nombre_d_éléments` (correctness), **sans** recompter l'usage — éditer une
@@ -267,7 +277,8 @@ export class SessionsService {
    * décrémenter (Modèle §9/§10). 404 si la séance n'appartient pas au compte.
    */
   async remove(compteId: string, seanceId: string): Promise<void> {
-    await this.loadOwned(compteId, seanceId);
+    // Écriture : le cheval doit être **modifiable** (refus 409 si archivé, 4.3).
+    await this.loadOwned(compteId, seanceId, true);
     await this.db.delete(seance).where(eq(seance.id, seanceId));
   }
 
@@ -370,12 +381,23 @@ export class SessionsService {
    * la table du module, sa **propriété** est vérifiée via `horses` (jamais en
    * lisant sa table, Architecture §1) ; toute séance étrangère devient un 404
    * `SéanceNotFoundError`. Base du scoping pour lecture/édition/suppression.
+   *
+   * `forWrite` (lot 4.3) : pour une **écriture**, la vérification passe par
+   * `horses.assertModifiable` → un cheval **archivé** fait lever `ChevalArchivéError`
+   * (409, lecture seule), **propagé tel quel** (seul `ChevalNotFoundError` est
+   * masqué en 404 pour ne pas fuiter l'existence). Pour une **lecture** (défaut),
+   * on emprunte `findOne` : l'historique d'un cheval archivé reste consultable.
    */
-  private async loadOwned(compteId: string, seanceId: string): Promise<typeof seance.$inferSelect> {
+  private async loadOwned(
+    compteId: string,
+    seanceId: string,
+    forWrite = false,
+  ): Promise<typeof seance.$inferSelect> {
     const [row] = await this.db.select().from(seance).where(eq(seance.id, seanceId)).limit(1);
     if (!row) throw new SéanceNotFoundError();
     try {
-      await this.horses.findOne(compteId, row.cheval_id);
+      if (forWrite) await this.horses.assertModifiable(compteId, row.cheval_id);
+      else await this.horses.findOne(compteId, row.cheval_id);
     } catch (error) {
       if (error instanceof ChevalNotFoundError) throw new SéanceNotFoundError();
       throw error;

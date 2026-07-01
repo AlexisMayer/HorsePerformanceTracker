@@ -81,4 +81,33 @@ export class HorsesController {
   ): Promise<void> {
     return this.horses.remove(user.id, id);
   }
+
+  /**
+   * **Archive** un cheval du compte (lot 4.3, Spec §9.2) — lecture seule, hors
+   * quota, réversible. Action dédiée (pas un champ du PATCH). **Non gatée par le
+   * tier** : un cavalier gratuit peut archiver son unique cheval. 404 sinon.
+   */
+  @Post(':id/archive')
+  @HttpCode(200)
+  archive(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<ChevalSortie> {
+    return this.horses.archive(user.id, id);
+  }
+
+  /**
+   * **Désarchive** un cheval du compte (lot 4.3) — le ramène dans l'actif.
+   * **Quota-gardé (garde 4.1)** : refusé (403) si cela dépasserait le plafond de
+   * chevaux actifs du tier ; le `tier` du principal est passé au service. 404 sinon.
+   * `200` (bascule d'état d'une ressource existante, pas une création).
+   */
+  @Post(':id/unarchive')
+  @HttpCode(200)
+  unarchive(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<ChevalSortie> {
+    return this.horses.unarchive(user.id, user.tier, id);
+  }
 }

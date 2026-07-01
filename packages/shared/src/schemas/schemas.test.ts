@@ -118,11 +118,15 @@ describe('chevalSortieSchema (DTO de sortie)', () => {
       hauteur_de_référence: 110,
       âge: null,
       race: null,
+      archivé: true,
       // Clé parasite : doit disparaître à la projection.
       secret_interne: 'ne-doit-pas-fuiter',
     });
     expect(sortie).not.toHaveProperty('secret_interne');
     expect(sortie.nom).toBe('Pampa');
+    // `archivé` (lot 4.3) est projeté : l'app en a besoin pour exclure le cheval
+    // du sélecteur actif et le ranger dans la section « archivés ».
+    expect(sortie.archivé).toBe(true);
     expectTypeOf<ChevalSortie>().not.toHaveProperty('secret_interne');
   });
 });
