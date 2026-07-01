@@ -9,6 +9,7 @@ export * from './compte';
 export * from './contexte';
 export * from './entitlement';
 export * from './feed';
+export * from './heatmap';
 export * from './historique';
 export * from './metrics';
 export * from './obstacle';
