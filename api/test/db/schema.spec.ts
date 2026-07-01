@@ -51,6 +51,7 @@ const TABLES: Record<string, string[]> = {
     'hauteur_de_reference',
     'age',
     'race',
+    'archive',
   ],
   seance: [
     'id',

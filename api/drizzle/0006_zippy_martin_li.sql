@@ -1,0 +1,1 @@
+ALTER TABLE "cheval" ADD COLUMN "archive" boolean DEFAULT false NOT NULL;

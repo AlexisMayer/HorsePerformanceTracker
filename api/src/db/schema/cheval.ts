@@ -1,4 +1,4 @@
-import { integer, pgTable, text, uuid } from 'drizzle-orm/pg-core';
+import { boolean, integer, pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { champsTechniques } from './champs-techniques';
 import { compte } from './compte';
 import { chevalNiveauEnum } from './enums';
@@ -12,6 +12,13 @@ import { chevalNiveauEnum } from './enums';
  * `âge` et `race` sont optionnels (nullable). Le nom de colonne physique est
  * désaccentué (`hauteur_de_reference`, `age`) ; la clé TS garde l'accent du
  * domaine pour rester alignée sur `shared`.
+ *
+ * `archivé` (lot 4.3, Spec §9.2) : un cheval **vendu/parti** est archivé →
+ * **lecture seule** (son historique est conservé), **hors liste active** et
+ * **hors quota** de chevaux, **réversible**. `NOT NULL DEFAULT false` : tout
+ * cheval naît actif ; le décompte du quota (`countActifs`, pré-câblé en 4.1)
+ * filtre `archivé = false`, si bien qu'un cheval archivé en **sort
+ * mécaniquement**. Nom de colonne physique désaccentué (`archive`).
  */
 export const cheval = pgTable('cheval', {
   ...champsTechniques,
@@ -23,4 +30,5 @@ export const cheval = pgTable('cheval', {
   hauteur_de_référence: integer('hauteur_de_reference').notNull(),
   âge: integer('age'),
   race: text('race'),
+  archivé: boolean('archive').notNull().default(false),
 });

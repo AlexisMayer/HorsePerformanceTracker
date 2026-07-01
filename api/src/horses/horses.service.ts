@@ -10,7 +10,7 @@ import { and, count, eq } from 'drizzle-orm';
 import { type Database, DRIZZLE } from '../db/database.module';
 import { cheval } from '../db/schema';
 import { EntitlementsService } from '../entitlements/entitlements.service';
-import { ChevalNotFoundError } from './horses.errors';
+import { ChevalArchivéError, ChevalNotFoundError } from './horses.errors';
 
 /**
  * Service de domaine **`horses`** (lot 2.1, Architecture §3) : CRUD de la fiche
@@ -30,6 +30,16 @@ import { ChevalNotFoundError } from './horses.errors';
  * propres lignes) et **délègue la décision** ; aucune règle de tier n'est
  * dispersée ici (le service ne connaît ni les forfaits ni les chiffres). Les
  * dépendances restent orientées `horses → entitlements` (pas de cycle).
+ *
+ * **Archivage (lot 4.3, Spec §9.2)** : `archive`/`unarchive` basculent le statut
+ * `archivé`. Un cheval archivé est **lecture seule** (`assertModifiable` refuse
+ * toute écriture de fiche **et** de séance — ce dernier via `sessions`), **hors
+ * liste active du sélecteur** et **hors quota** (`countActifs` filtre
+ * `archivé = false` — le décompte pré-câblé en 4.1 s'ajuste ainsi
+ * **mécaniquement**). Le **désarchivage est quota-gardé** (même garde 4.1) :
+ * ramener un cheval dans l'actif ne peut pas dépasser le plafond du tier.
+ * L'**archivage** n'est **pas** gaté par le tier (un cavalier gratuit doit
+ * pouvoir archiver son unique cheval, Spec §9.2) ; seul le **désarchivage** l'est.
  */
 @Injectable()
 export class HorsesService {
@@ -62,16 +72,16 @@ export class HorsesService {
 
   /**
    * Décompte des chevaux **actifs** du compte — base du quota (Spec §8), pour
-   * `entitlements`. **Décompte sur l'actif (pré-câblé pour 4.3)** : aujourd'hui
-   * il n'y a pas de colonne `archivé`, donc « actif » = tous les chevaux ; quand
-   * 4.3 ajoutera l'archivage, il suffira d'ajouter `WHERE archivé = false` ici et
-   * un cheval archivé **sortira mécaniquement du quota** (Spec §9.2).
+   * `entitlements`. **Décompte sur l'actif** : un cheval **archivé** (lot 4.3)
+   * ne compte plus (`archivé = false` dans le `WHERE`) → il **sort
+   * mécaniquement du quota** (Spec §9.2), sans toucher au gating. C'est le seul
+   * endroit pré-câblé en 4.1 pour brancher l'archivage.
    */
   async countActifs(compteId: string): Promise<number> {
     const [{ n }] = await this.db
       .select({ n: count() })
       .from(cheval)
-      .where(eq(cheval.compte_id, compteId));
+      .where(and(eq(cheval.compte_id, compteId), eq(cheval.archivé, false)));
     return n;
   }
 
@@ -95,8 +105,13 @@ export class HorsesService {
    * Édite un cheval **du compte** (PATCH partiel). Un champ absent reste
    * inchangé ; `null` sur `âge`/`race` les efface. La mise à jour est filtrée
    * par `compte_id` (scoping) et renvoie 404 si rien n'a matché.
+   *
+   * **Lecture seule si archivé** (lot 4.3) : `assertModifiable` refuse l'édition
+   * d'un cheval archivé (409) avant toute écriture. Le statut d'archivage lui-même
+   * ne passe **pas** par ici — il a ses actions dédiées (`archive`/`unarchive`).
    */
   async update(compteId: string, id: string, dto: ChevalModifierDto): Promise<ChevalSortie> {
+    await this.assertModifiable(compteId, id);
     const updates: Partial<typeof cheval.$inferInsert> = {};
     if (dto.nom !== undefined) updates.nom = dto.nom;
     if (dto.niveau !== undefined) updates.niveau = dto.niveau;
@@ -136,6 +151,69 @@ export class HorsesService {
       .returning({ id: cheval.id });
     if (!row) {
       throw new ChevalNotFoundError();
+    }
+  }
+
+  /**
+   * **Archive** un cheval **du compte** (lot 4.3, Spec §9.2) : passe `archivé =
+   * true`. Le cheval **sort du quota** (`countActifs` l'exclut) et de la **liste
+   * active** ; son historique est **conservé** (aucune purge) et devient
+   * **lecture seule** (`assertModifiable`). **Non gaté par le tier** — un cavalier
+   * gratuit doit pouvoir archiver son unique cheval (Spec §9.2). Idempotent
+   * (archiver un cheval déjà archivé le laisse archivé). 404 si étranger au compte.
+   */
+  async archive(compteId: string, id: string): Promise<ChevalSortie> {
+    const [row] = await this.db
+      .update(cheval)
+      .set({ archivé: true })
+      .where(and(eq(cheval.id, id), eq(cheval.compte_id, compteId)))
+      .returning();
+    if (!row) {
+      throw new ChevalNotFoundError();
+    }
+    return chevalSortieSchema.parse(row);
+  }
+
+  /**
+   * **Désarchive** un cheval **du compte** (lot 4.3, Spec §9.2) — réintègre le
+   * cheval à la liste active. **Quota-gardé (garde 4.1)** : réintégrer un cheval
+   * revient à **créer une place**, donc soumis à la **même garde que la création**
+   * (`assertPeutCréer`). Si le tier est déjà à son plafond de chevaux **actifs**,
+   * `QuotaDépasséError` (403) — un gratuit/premium ne contourne donc **pas** la
+   * limite 1 cheval en jouant archive/désarchive. `countActifs` exclut ce cheval
+   * (encore archivé) : le plafond porte bien sur l'état **après** désarchivage.
+   * Idempotent si déjà actif (no-op, aucune vérification — il était déjà compté).
+   * 404 si étranger au compte.
+   */
+  async unarchive(compteId: string, tier: Tier, id: string): Promise<ChevalSortie> {
+    const row = await this.findOwned(compteId, id);
+    if (!row.archivé) {
+      return chevalSortieSchema.parse(row);
+    }
+    this.entitlements.assertPeutCréer(tier, 'chevaux', await this.countActifs(compteId));
+    const [updated] = await this.db
+      .update(cheval)
+      .set({ archivé: false })
+      .where(and(eq(cheval.id, id), eq(cheval.compte_id, compteId)))
+      .returning();
+    if (!updated) {
+      throw new ChevalNotFoundError();
+    }
+    return chevalSortieSchema.parse(updated);
+  }
+
+  /**
+   * **Garde d'écriture** partagée (lot 4.3) : charge la fiche **scopée au compte**
+   * (404 sans fuite si étrangère) et **refuse si le cheval est archivé** (409,
+   * `ChevalArchivéError`). Un cheval archivé est en **lecture seule** (Spec §9.2,
+   * cohérent avec l'inviolabilité Modèle §2). Utilisée par `update` (édition de
+   * fiche) **et** par le service `sessions` (écriture/édition/suppression de
+   * séance) — l'état d'archivage reste **connu du seul module `horses`**.
+   */
+  async assertModifiable(compteId: string, id: string): Promise<void> {
+    const row = await this.findOwned(compteId, id);
+    if (row.archivé) {
+      throw new ChevalArchivéError();
     }
   }
 

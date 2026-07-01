@@ -43,6 +43,13 @@
       "when": 1782842555319,
       "tag": "0005_abonnement",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782885138862,
+      "tag": "0006_zippy_martin_li",
+      "breakpoints": true
     }
   ]
 }

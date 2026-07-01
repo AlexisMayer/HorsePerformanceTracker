@@ -5,7 +5,7 @@
  * logique testable sans React (`horses-api`) vit dans son module et est couverte
  * par Vitest.
  */
-export { horseErrorMessage } from './error-messages';
+export { horseErrorMessage, isQuotaBlocked } from './error-messages';
 export { HorseForm, type HorseFormSubmit } from './horse-form';
 export { HorseSelector } from './horse-selector';
 export { type HorsesContextValue, HorsesProvider, useHorses } from './horses-context';

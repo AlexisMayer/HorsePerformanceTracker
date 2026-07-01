@@ -61,6 +61,12 @@ export type ChevalModifierDto = z.infer<typeof chevalModifierSchema>;
  * en base (`âge`, `race`) sont rendus en `null` (fidèles au sérialisé, pas
  * silencieusement omis). Le `.strip()` par défaut de Zod retire toute clé
  * inattendue : parser la ligne brute ne peut donc rien laisser fuir.
+ *
+ * `archivé` (lot 4.3) est projeté : l'app en a besoin pour **exclure** le cheval
+ * du sélecteur actif (UI/UX §5) et le ranger dans la **section « archivés »**
+ * (lecture seule). L'archivage/désarchivage passe par des **actions dédiées**
+ * (`POST /horses/:id/archive` · `/unarchive`), **pas** par le PATCH générique —
+ * ce qui garde la **garde de quota** (4.1) sur le seul chemin de désarchivage.
  */
 export const chevalSortieSchema = z.object({
   id: z.string(),
@@ -72,6 +78,7 @@ export const chevalSortieSchema = z.object({
   hauteur_de_référence: z.number(),
   âge: z.number().nullable(),
   race: z.string().nullable(),
+  archivé: z.boolean(),
 });
 
 export type ChevalSortie = z.infer<typeof chevalSortieSchema>;

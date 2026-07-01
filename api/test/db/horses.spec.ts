@@ -449,3 +449,142 @@ describe('quota de chevaux (gating 4.1 — autorité serveur, Spec §8)', () => 
     expect(list.body).toHaveLength(3);
   });
 });
+
+describe('archivage (lot 4.3, Spec §9.2 — lecture seule, hors quota, réversible)', () => {
+  /** Requête de création d'un cheval pour `a` (à compléter par `.expect(...)`). */
+  const créer = (a: TestAccount, nom: string) =>
+    request(app.getHttpServer())
+      .post('/horses')
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .send({ nom, niveau: 'amateur', hauteur_de_référence: 110 });
+
+  it('archiver sort le cheval du quota : un gratuit au plafond peut créer après archivage — preuve DoD', async () => {
+    const a = await registerAndLogin('archive-quota@hpt.test');
+    const h1 = (await créer(a, 'Vendu').expect(201)).body;
+    // Plafond gratuit atteint (1 actif) : 2ᵉ refusé.
+    await créer(a, 'Trop').expect(403);
+
+    // Archiver le 1er : action **non gatée par le tier** (gratuit OK), archivé:true.
+    const archived = await (await http())
+      .post(`/horses/${h1.id}/archive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    expect(archived.body.archivé).toBe(true);
+
+    // Décompte actif : la place est libérée → un nouveau cheval passe (201).
+    await créer(a, 'Nouveau').expect(201);
+  });
+
+  it('archivé = lecture seule : PATCH de la fiche refusé (409)', async () => {
+    const a = await registerAndLogin('archive-readonly@hpt.test');
+    const h = (await créer(a, 'Figé').expect(201)).body;
+    await (await http())
+      .post(`/horses/${h.id}/archive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+
+    await (await http())
+      .patch(`/horses/${h.id}`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .send({ nom: 'Renommé' })
+      .expect(409);
+
+    // La fiche est inchangée et toujours consultable (historique conservé).
+    const still = await (await http())
+      .get(`/horses/${h.id}`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    expect(still.body.nom).toBe('Figé');
+    expect(still.body.archivé).toBe(true);
+  });
+
+  it('historique conservé et consultable après archivage', async () => {
+    const a = await registerAndLogin('archive-history@hpt.test');
+    const h = (await créer(a, 'Retraité').expect(201)).body;
+    await seedHistory(h.id);
+
+    await (await http())
+      .post(`/horses/${h.id}/archive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+
+    // Les séances existent toujours (aucune purge) et restent lisibles.
+    const sessions = await (await http())
+      .get(`/horses/${h.id}/sessions`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    expect(sessions.body).toHaveLength(2);
+  });
+
+  it('réversible : désarchiver DANS le quota ramène le cheval (200, archivé:false)', async () => {
+    const a = await registerAndLogin('unarchive-ok@hpt.test');
+    const h = (await créer(a, 'Revient').expect(201)).body;
+    await (await http())
+      .post(`/horses/${h.id}/archive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+
+    const back = await (await http())
+      .post(`/horses/${h.id}/unarchive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    expect(back.body.archivé).toBe(false);
+  });
+
+  it('désarchivage QUOTA-GARDÉ : refusé (403) si cela dépasse le plafond du tier — garde 4.1', async () => {
+    const a = await registerAndLogin('unarchive-quota@hpt.test');
+    const h1 = (await créer(a, 'Ancien').expect(201)).body;
+    // Archiver H1 libère la place → créer H2 (actif) l'occupe.
+    await (await http())
+      .post(`/horses/${h1.id}/archive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    await créer(a, 'Actuel').expect(201);
+
+    // Désarchiver H1 ferait 2 actifs > plafond gratuit (1) → REFUSÉ. Le
+    // gratuit ne contourne pas la limite via archive/désarchive.
+    await (await http())
+      .post(`/horses/${h1.id}/unarchive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(403);
+
+    // H1 reste archivé (refus réel).
+    const still = await (await http())
+      .get(`/horses/${h1.id}`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    expect(still.body.archivé).toBe(true);
+  });
+
+  it('pro : désarchiver au-delà de 1 est autorisé (multi-chevaux)', async () => {
+    const a = await registerWithTier('unarchive-pro@hpt.test', 'pro');
+    const h1 = (await créer(a, 'P1').expect(201)).body;
+    await (await http())
+      .post(`/horses/${h1.id}/archive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    await créer(a, 'P2').expect(201);
+
+    // Pro = quota illimité : désarchiver H1 avec P2 déjà actif passe (201).
+    const back = await (await http())
+      .post(`/horses/${h1.id}/unarchive`)
+      .set('Authorization', `Bearer ${a.accessToken}`)
+      .expect(200);
+    expect(back.body.archivé).toBe(false);
+  });
+
+  it('scoping : archiver/désarchiver le cheval d’un autre compte → 404 (aucune fuite)', async () => {
+    const a = await registerAndLogin('archive-owner@hpt.test');
+    const b = await registerAndLogin('archive-intrus@hpt.test');
+    const h = (await créer(a, 'Privé').expect(201)).body;
+
+    await (await http())
+      .post(`/horses/${h.id}/archive`)
+      .set('Authorization', `Bearer ${b.accessToken}`)
+      .expect(404);
+    await (await http())
+      .post(`/horses/${h.id}/unarchive`)
+      .set('Authorization', `Bearer ${b.accessToken}`)
+      .expect(404);
+  });
+});
