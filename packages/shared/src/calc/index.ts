@@ -3,5 +3,6 @@ export * from './faits-seance';
 export * from './franchissement';
 export * from './hauteur-maitrisee';
 export * from './jalons';
+export * from './regularite';
 export * from './sans-faute';
 export * from './taux-reussite';
