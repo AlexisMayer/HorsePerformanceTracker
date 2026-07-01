@@ -2,6 +2,8 @@ import type { SéanceSortie } from '@hpt/shared';
 import { useRouter } from 'expo-router';
 import { useCallback, useMemo } from 'react';
 import { ActivityIndicator, RefreshControl, SectionList, StyleSheet, View } from 'react-native';
+import { useBilansAugmentésDisponibles } from '../../ai-bilan';
+import { useEntitlement } from '../../entitlements';
 import { flattenHistory, groupByMonth, HistoryEntryCard, useHistory } from '../../history';
 import { HorseSelector, useHorses } from '../../horses';
 import { colors, spacing } from '../../theme';
@@ -30,13 +32,24 @@ export default function HistoriqueScreen() {
   const séances = flattenHistory(history.data?.pages);
   const sections = useMemo(() => groupByMonth(séances), [séances]);
 
+  // Slot ✦ (lot 4.5) : on lit `ai-bilan` **uniquement** si la capacité est
+  // débloquée (premium/pro) — le gratuit ne fait aucun appel et ne voit jamais de
+  // ✦. L'ensemble des séances qui ont un bilan augmenté remplit le slot pré-câblé
+  // en 3.4 (sans toucher à `badgesBilan`).
+  const { entitlement } = useEntitlement();
+  const augmentéCapacité = entitlement?.capacités?.bilan_augmenté ?? false;
+  const dispo = useBilansAugmentésDisponibles(chevalId, augmentéCapacité);
+  const augmentés = useMemo(() => new Set(dispo.data?.seance_ids ?? []), [dispo.data?.seance_ids]);
+
   const renderItem = useCallback(
     ({ item }: { item: SéanceSortie }) => (
-      // Pas de `augmentéDisponible` : aucune source `ai-bilan` en 3.4 ⇒ le slot ✦
-      // reste vide (il se remplira en 4.5 sans toucher à la carte).
-      <HistoryEntryCard séance={item} onOuvrir={() => router.push(`/sessions/${item.id}/card`)} />
+      <HistoryEntryCard
+        séance={item}
+        augmentéDisponible={augmentés.has(item.id)}
+        onOuvrir={() => router.push(`/sessions/${item.id}/card`)}
+      />
     ),
-    [router],
+    [router, augmentés],
   );
 
   const onEndReached = useCallback(() => {

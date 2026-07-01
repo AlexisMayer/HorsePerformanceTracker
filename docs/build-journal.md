@@ -3335,3 +3335,181 @@ objets distincts (Spec §5.4/§8).
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 4.4 inclus) — **aucune migration** en 4.4 | ✅ |
 
 ---
+
+## Lot 4.5 — Assistant IA — bilan augmenté · 2026-07-01
+
+Suite de la **Phase 4 (Monétisation)**. Module **`ai-bilan`** (api) + **entité +
+DTO** dans `shared` + tranche **`app`** : le **bilan augmenté** par l'assistant
+IA (Spec §7) — pour **une séance**, un **texte consultatif** (analyse de la
+dernière séance + recommandations pour la prochaine), **généré par IA**
+(Mistral, UE), **à la demande**, **persisté**, **relu sans régénération**,
+**rate-limité**, avec **disclaimer**. Il **remplit le slot ✦** pré-câblé (vide)
+en 3.4 et **attache la garde** premium/pro de 4.1. Strictement le lot 4.5 :
+**ni** bilan de progression (4.4), **ni** bilan de séance simple (3.3, gratuit),
+**ni** comptes invité (4.6, qui n'y ont **pas** accès) — trois objets distincts
+(Spec §5.4/§8).
+
+### Emplacement (décisions tranchées)
+
+- **`shared` (type + DTO)** — le contrat vit ici, **une seule** implémentation
+  (Archi §2) : `types/ai-bilan.ts` (**entité de domaine `BilanAugmenté`**, Modèle
+  §3, miroir de la ligne persistée) ; `schemas/ai-bilan.ts` (`DISCLAIMER_IA`
+  constante ; `bilanAugmentéSortieSchema` = projection + `contenu` regroupé +
+  `disclaimer` ; `bilansAugmentésDisponiblesSchema` pour le slot ✦). Barils
+  (`types/index`, `schemas/index`) mis à jour.
+- **Schéma + migration** : `api/src/db/schema/ai-bilan.ts` (table `bilan_augmente`)
+  + `api/drizzle/0007_soft_infant_terrible.sql` — **additive** (1 CREATE TABLE +
+  FK `seance_id` **CASCADE** + **UNIQUE(seance_id)**). **Alignée** sur `shared`
+  (`alignment.spec.ts`, +1) : contrairement aux tables techniques (`refresh_token`,
+  `abonnement`), c'est une **vraie entité de domaine** (§3).
+- **Module API** : `api/src/ai-bilan/` (par domaine, §3) — `mistral.port.ts`
+  (interface `MistralPort` + jeton `MISTRAL` + types de contexte/sortie),
+  `stub-mistral.ts` (adaptateur **dev/test déterministe**, sans réseau),
+  `mistral-http.client.ts` (adaptateur **réel** La Plateforme, jamais importé par
+  un test), `ai-bilan.config.ts` (**modèle épinglé** + rate limit, lus de l'env),
+  `ai-bilan-rate-limiter.ts` (fenêtre glissante par utilisateur, horloge
+  injectable), `build-context.ts` (**pur** : contexte narratif via `faitsSéance`),
+  `ai-bilan.errors.ts` (`BilanAugmentéNotFoundError` 404, `BilanAugmentéRateLimitError`
+  429), `ai-bilan.service.ts` (orchestration get-or-create), `ai-bilan.controller.ts`
+  (3 routes gardées), `ai-bilan.module.ts`. Enregistré dans `app.module.ts`.
+- **Tranche front** : `app/src/ai-bilan/` — `ai-bilan-api.ts`, `use-ai-bilan.ts`
+  (génération/relecture/disponibilité), `ai-bilan-card.tsx` (carte ✦ + disclaimer),
+  `ai-bilan-section.tsx` (section « Générer » à l'enregistrement, **verrou 4.2** au
+  gratuit). Câblages : **`capture.tsx`** (section à l'enregistrement),
+  **`historique.tsx`** (remplit le **slot ✦** via la disponibilité),
+  **`sessions/[id]/card.tsx`** (relecture du bilan, sans régénération).
+
+### Décisions tranchées (et pourquoi)
+
+- **Client IA derrière une interface injectable + stub par défaut (consigne,
+  Stack §3.6).** Le sandbox de dev **n'atteint pas Mistral** : le jeton `MISTRAL`
+  est fourni par `useFactory` — **stub déterministe** (`StubMistral`) **sans clé**,
+  **vrai client** (`MistralHttpClient`) **avec clé** (`MISTRAL_API_KEY`, Secret
+  Manager en prod). Même couture que le port Mollie (4.2) et le port de rendu
+  (4.4). Le service ne dépend que de l'**interface** → **les tests moquent le
+  client** (`.overrideProvider(MISTRAL)`), et l'e2e **compte les appels IA** pour
+  prouver « relire sans régénérer ».
+- **Modèle épinglé, jamais `-latest` (Stack §3.6).** `AI_BILAN_MODEL` (famille,
+  déf. `mistral-small`) + `AI_BILAN_MODEL_VERSION` (version **épinglée**, déf.
+  `mistral-small-2409`) — paramétrables par env, **jamais en dur ailleurs** (même
+  posture que les tarifs Mollie 4.2). Le **modèle + la version effectivement
+  appelés** sont **retournés par le port** et **persistés** sur chaque bilan
+  (auditabilité, reproductibilité) — prouvé en base (`SELECT modele, version`).
+- **Génération = get-or-create → « relu sans régénération » par construction
+  (Spec §7.3, garde-fou de coût).** `UNIQUE(seance_id)` : **un seul** bilan par
+  séance. `générer()` renvoie l'existant **sans appeler l'IA ni consommer le rate
+  limit** ; la relecture (GET) ne fait **jamais** d'appel IA. Un re-POST est donc
+  idempotent (aucun double coût). Prouvé e2e : POST → 1 appel ; GET puis re-POST →
+  **toujours 1 appel** (client moqué).
+- **À la demande uniquement (Spec §7.1).** Aucune génération automatique : la
+  tranche front n'appelle `générer` que sur **action explicite** (bouton « Générer
+  le bilan augmenté »), via une **mutation** TanStack (jamais une query passive).
+- **Rate limiting par utilisateur + garde-fous de coût (Stack §3.6).**
+  `AiBilanRateLimiter` : fenêtre glissante en mémoire, `AI_BILAN_RATE_LIMIT`
+  générations max par `AI_BILAN_RATE_WINDOW_MS` (déf. 10/h). Seul un **nouvel**
+  appel consomme (get-or-create) ; dépassement → **429** (`BilanAugmentéRateLimitError`),
+  la **relecture restant possible**. Horloge **injectable** (unit-test déterministe) ;
+  e2e à plafond bas (2) prouvant le 429.
+- **Contexte = matière narrative des dernières séances (Spec §7.2, Modèle §1).**
+  `build-context.ts` (**pur**) projette la séance cible + jusqu'à 5 précédentes en
+  **couche objective** (via `faitsSéance` de `shared`, jamais réimplémenté) **et**
+  **couche contexte qualitatif** (ressenti/énergie/note). **Autorisé** car la
+  sortie est un **texte consultatif**, **pas un agrégat** — c'est l'exception
+  explicite du Modèle §1. La sortie **n'alimente aucune métrique** (prouvé e2e :
+  séances + `metrics` inchangés après génération).
+- **Disclaimer (Spec §7.2) = constante `shared`, réattachée à la lecture.**
+  `DISCLAIMER_IA` (« généré par une IA, à valider ; ni avis vétérinaire, ni
+  substitut au coach ») n'est **pas persisté** : le service la **rattache** à
+  chaque projection (toujours présente, jamais périmée), l'app l'affiche dans la
+  carte ✦. Le contenu IA est **clairement marqué** (badge ✦ + tag « IA »).
+- **Garde d'entitlement premium/pro attachée (4.1).** `@RequireCapacité('bilan_
+  augmenté')` + `EntitlementGuard`, **après** `JwtAccessGuard`, sur les **trois**
+  routes. Un **gratuit** (et l'invité 4.6, sans la capacité) est refusé en **403** ;
+  l'app ne fait que **griser** (`LockedFeature`, verrou 4.2). Côté app, la lecture
+  de disponibilité et la relecture sont **désactivées** sans la capacité (aucun
+  appel, aucun ✦) — cohérent « refusé au gratuit ».
+- **Trois routes, orientées ressource (Archi §5), via `sessions`.** `POST
+  /sessions/:id/ai-bilan` (générer), `GET /sessions/:id/ai-bilan` (relire), `GET
+  /horses/:id/ai-bilan` (disponibilité, slot ✦). La **propriété** est vérifiée via
+  `SessionsService.findOne`/`listForHorse` (404 sans fuite) — `ai-bilan` ne lit
+  **jamais** la table `seance` en direct (§1) ; il ne possède que `bilan_augmente`.
+- **Le slot ✦ de 3.4 est alimenté sans toucher `badgesBilan`.** L'Historique lit
+  `GET /horses/:id/ai-bilan` (si capacité) → un `Set` de `seance_ids` → passe
+  `augmentéDisponible` à `HistoryEntryCard`. Le conditionnel **pur** posé en 3.4
+  (`badgesBilan(true) ⇒ ['simple','augmenté']`) est **réutilisé tel quel**.
+
+### Écarts vs cadrage (consignés)
+
+- **Table `bilan_augmente` créée en 4.5 (back-doc), pas en 0.3.** L'entité **est
+  spécifiée au Modèle §3** mais ne faisait pas partie des **6 entités socle** de
+  0.3 ; 4.5 ajoute la table par **migration additive** et l'**aligne** sur `shared`
+  (à la différence d'`abonnement`/`refresh_token`, techniques et non alignées). À
+  **back-documenter** dans le doc Modèle de données comme entité désormais réalisée
+  (point ouvert ci-dessous).
+- **`contenu` = deux colonnes plates (`analyse`, `recommandations`), regroupées en
+  sortie.** La ligne persistée est plate (alignement `BilanAugmenté`) ; le DTO de
+  sortie les **regroupe** sous `contenu` (fidèle au libellé Modèle §3) et ajoute le
+  `disclaimer`. Deux formes distinctes pour deux usages (ligne de domaine vs
+  projection API) — même esprit que `Séance` (plat) vs `séanceSortie` (imbriqué).
+- **Rate limiter in-memory (mono-instance).** Suffisant pour un usager seul (même
+  posture que le décompte de quota 4.1) ; un backend partagé (Redis) sera utile si
+  plusieurs instances d'API tournent — point ouvert. Fenêtre par utilisateur, pas
+  par cheval (le plafond de coût est un plafond d'appels par compte).
+- **Get-or-create plutôt que « régénérer ».** La Spec dit « à la demande, relu
+  sans régénération » sans trancher une régénération explicite ; on choisit le
+  **get-or-create** (un bilan par séance) — la lecture la plus fidèle à §7.3 et le
+  garde-fou de coût le plus simple. Une future « régénération » (invalidation
+  explicite) resterait possible sans casser le contrat (point ouvert).
+- **Sortie app non re-validée par Zod au bord.** Comme `metrics`/`progression-report`
+  (dates en `Date` côté type, chaînes ISO sur le fil), la réponse n'est pas
+  re-parsée côté app ; l'affichage n'utilise que du texte/des chaînes, insensible à
+  ce détail de transport. Le **404** de relecture est traité comme `null` (pas une
+  erreur) → l'écran propose de générer.
+- **Client Mistral réel couvert par `tsc`, jamais exécuté en test/sandbox.** Comme
+  le client Mollie (4.2) et les adaptateurs natifs (2.3/3.3) : la logique est
+  prouvée avec le **stub**/le **mock**, le vrai client est vérifié par les types.
+
+### Points laissés ouverts (reports explicites)
+
+- **Clé Mistral réelle en prod** via **env / Secret Manager** (`MISTRAL_API_KEY`) :
+  le module bascule alors du **stub** au **`MistralHttpClient`** sans toucher au
+  service. Un test de bout en bout contre l'API Mistral réelle reste à exécuter
+  côté validateur (hors sandbox, sans réseau IA) — même posture que Mollie (4.2).
+- **Le slot ✦ de 3.4 est désormais alimenté** : l'Historique affiche `✦ augmenté`
+  **uniquement** là où un bilan existe (premium/pro) ; le conditionnel `badgesBilan`
+  reste intact.
+- **L'invité (4.6) est exclu du bilan augmenté (Spec §9.5).** L'accès invité
+  (lecture seule) ne portera **pas** la capacité `bilan_augmenté` — les routes le
+  refusent déjà (403). À vérifier lorsque la coquille invité sera branchée (4.6).
+- **Back-documenter la table `bilan_augmente`** dans le **Modèle de données**
+  (entité §3 désormais réalisée) — doc de cadrage, hors code.
+- **Rate limit partagé (Redis) + régénération explicite** : évolutions possibles
+  (multi-instances ; « refaire le bilan ») sans casser le contrat actuel.
+- **Curation du contexte.** On envoie la séance + 5 précédentes ; affiner la
+  fenêtre/le prompt (et la longueur) relèvera du réglage produit, sans toucher au
+  contrat ni au port.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Générer sur demande** un bilan augmenté (premium/pro), **persisté** | e2e `ai-bilan.spec.ts` : `POST /sessions/:id/ai-bilan` → contenu (analyse+recommandations), ligne en base (`SELECT … FROM bilan_augmente`) ; bouton **explicite** côté app (mutation) | ✅ |
+| **Relire sans régénérer** (aucun nouvel appel IA à la relecture) | e2e (**client moqué, compteur**) : POST → 1 appel ; **GET** puis **re-POST** → **toujours 1 appel** (get-or-create) ; relecture app via `GET`, sans mutation | ✅ |
+| **Refusé au gratuit** (garde 4.1, capacité `bilan_augmenté`) | e2e : gratuit → **403** (POST/GET/dispo) ; app `LockedFeature` grise (verrou 4.2) ; query dispo/relecture **désactivées** sans la capacité | ✅ |
+| **Modèle + version épinglés enregistrés** (jamais `-latest`) | e2e : `bilan_augmente.modele='mistral-small'`, `version='mistral-small-2409'` ; unit `stub-mistral.spec` (trace la config, `not.toContain('latest')`) | ✅ |
+| **Disclaimer présent** ; sortie **n'alimente aucune métrique** | e2e : `disclaimer` non vide (IA/véto) ; **séances + `metrics` inchangés** après génération ; unit `ai-bilan.test` (disclaimer requis) ; carte ✦ affiche le disclaimer | ✅ |
+| **Rate limiting effectif** ; **client IA moqué** en test | e2e (plafond=2) : 3ᵉ génération → **429**, relecture toujours 200 ; unit `ai-bilan-rate-limiter.spec` (plafond, isolement, fenêtre) ; `.overrideProvider(MISTRAL)` | ✅ |
+| **Slot ✦ affiché uniquement si un bilan existe** (3.4 alimenté) | e2e `GET /horses/:id/ai-bilan` : liste la séance avec bilan, **pas** celle sans ; `historique.tsx` passe `augmentéDisponible` (capacité requise) → `badgesBilan` (3.4) inchangé | ✅ |
+| **À la demande uniquement** (jamais auto) ; **texte, jamais agrégat** (§1) | app : génération sur bouton (mutation) ; `build-context` = matière **narrative** (objective + qualitatif) pour un **texte** ; unit `build-context.spec` | ✅ |
+| **Autorisation** : séance/cheval d'un **autre compte** refusé ; non authentifié ; 404 si aucun bilan | e2e : intrus → **404** (séance & cheval) ; sans jeton → **401** ; relecture sans bilan → **404** | ✅ |
+| **Interface IA injectable + stub dev** (sandbox sans Mistral) | port `MISTRAL` (`useFactory`) : stub sans clé, `MistralHttpClient` avec clé ; stub **déterministe** (unit) ; vrai client couvert `tsc` | ✅ |
+| Aucun type d'API dupliqué ; entité alignée | DTO/type de `@hpt/shared` (`BilanAugmentéSortie`, `BilansAugmentésDisponibles`, `BilanAugmenté`) ; `alignment.spec` : `BilanAugmenté` ↔ ligne Drizzle | ✅ |
+| Pas de débordement de périmètre | **0** bilan de progression (4.4), **0** bilan simple (3.3), **0** compte invité (4.6) ; slot ✦ (3.4) rempli, garde (4.1)/verrou (4.2) réutilisés | ✅ |
+| `pnpm lint` | `biome check .` (365 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app ; alignement `BilanAugmenté`) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **177 (shared, +5)** + **54 (api, +13 : stub 5, rate-limiter 3, build-context 4, alignement +1)** + **179 (app, +3 ai-bilan-api)** | ✅ 410/410 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 144 (lots antérieurs) + **7 (ai-bilan 4.5)** | ✅ 151/151 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` 0→0007 + `verify`, e2e 4.5 inclus) | ✅ |
+
+---
