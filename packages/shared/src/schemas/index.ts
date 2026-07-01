@@ -1,4 +1,5 @@
 export * from './abonnement';
+export * from './acces-invite';
 export * from './account-export';
 export * from './ai-bilan';
 export * from './auth';

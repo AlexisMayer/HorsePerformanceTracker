@@ -16,12 +16,12 @@ import { createHeatmapApi } from './heatmap-api';
  * (dans le contenu débloqué du `LockedFeature`) : un compte gratuit ne déclenche
  * jamais la requête (et le serveur la refuserait de toute façon — 403).
  */
-export function useHeatmap(chevalId: string | null) {
+export function useHeatmap(chevalId: string | null, basePath = '/horses') {
   const { client, status, account } = useAuth();
-  const api = useMemo(() => createHeatmapApi(client), [client]);
+  const api = useMemo(() => createHeatmapApi(client, basePath), [client, basePath]);
 
   return useQuery({
-    queryKey: ['heatmap', account?.id ?? null, chevalId],
+    queryKey: ['heatmap', basePath, account?.id ?? null, chevalId],
     queryFn: () => api.getHeatmap(chevalId as string),
     enabled: status === 'authenticated' && chevalId != null,
     staleTime: 15_000,

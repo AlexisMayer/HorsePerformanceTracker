@@ -17,10 +17,15 @@ import { FeedService } from './feed.service';
  * le **calcul** vit dans `shared` (faits §7/§9, jalons §10) ; ce module ne fait
  * qu'**orchestrer** (Architecture §2). Le module `metrics` (3.2) **réutilisera**
  * le même calcul `shared` pour la vitrine — pas de double implémentation.
+ *
+ * `FeedService` est **exporté** (lot 4.6) : le module `guest-access` le consomme
+ * pour **relire le fil en lecture seule scopée** (invité), via le service exposé,
+ * sans recomposer — comme il réutilise `metrics`/`analytics` (Architecture §2/§3).
  */
 @Module({
   imports: [PassportModule, SessionsModule],
   controllers: [FeedController],
   providers: [FeedService],
+  exports: [FeedService],
 })
 export class FeedModule {}

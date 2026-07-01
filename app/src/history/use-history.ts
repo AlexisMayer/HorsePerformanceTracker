@@ -19,12 +19,12 @@ const PAGE_SIZE = 20;
  * séance supprimée (2.4) **disparaît** par construction (le serveur relit
  * l'historique courant ; rien n'est mis en cache d'agrégat).
  */
-export function useHistory(chevalId: string | null) {
+export function useHistory(chevalId: string | null, basePath = '/horses') {
   const { client, status, account } = useAuth();
-  const api = useMemo(() => createHistoryApi(client), [client]);
+  const api = useMemo(() => createHistoryApi(client, basePath), [client, basePath]);
 
   return useInfiniteQuery({
-    queryKey: ['history', account?.id ?? null, chevalId],
+    queryKey: ['history', basePath, account?.id ?? null, chevalId],
     queryFn: ({ pageParam }) =>
       api.getHistory(chevalId as string, { before: pageParam, limit: PAGE_SIZE }),
     enabled: status === 'authenticated' && chevalId != null,

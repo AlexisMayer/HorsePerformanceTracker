@@ -1,3 +1,4 @@
+export * from './acces-invite';
 export * from './cheval';
 export * from './compte';
 export * from './hauteurs';

@@ -18,11 +18,17 @@ export interface HeatmapApi {
   getHeatmap(chevalId: string): Promise<HeatmapDto>;
 }
 
-export function createHeatmapApi(client: ApiClient): HeatmapApi {
+/**
+ * `basePath` (lot 4.6) sélectionne la **portée** : `/horses` (défaut, gaté
+ * premium/pro) ou `/guest-access/horses` (invité — même heatmap, scopée par
+ * l'octroi ; l'invité n'est **pas** gaté par son tier, `read-scope`). La réponse
+ * (scalaires/tableaux) est **re-validée** par `heatmapSchema` des deux côtés.
+ */
+export function createHeatmapApi(client: ApiClient, basePath = '/horses'): HeatmapApi {
   return {
     getHeatmap: async (chevalId) =>
       heatmapSchema.parse(
-        await client.request<unknown>(`/horses/${chevalId}/heatmap`, { method: 'GET' }),
+        await client.request<unknown>(`${basePath}/${chevalId}/heatmap`, { method: 'GET' }),
       ),
   };
 }

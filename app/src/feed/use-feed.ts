@@ -18,12 +18,12 @@ const PAGE_SIZE = 20;
  * rafraîchit à l'ouverture (le serveur recompose les jalons depuis l'historique
  * courant — une suppression de séance, 2.4, est donc reflétée par construction).
  */
-export function useFeed(chevalId: string | null) {
+export function useFeed(chevalId: string | null, basePath = '/horses') {
   const { client, status, account } = useAuth();
-  const api = useMemo(() => createFeedApi(client), [client]);
+  const api = useMemo(() => createFeedApi(client, basePath), [client, basePath]);
 
   return useInfiniteQuery({
-    queryKey: ['feed', account?.id ?? null, chevalId],
+    queryKey: ['feed', basePath, account?.id ?? null, chevalId],
     queryFn: ({ pageParam }) =>
       api.getFeed(chevalId as string, { before: pageParam, limit: PAGE_SIZE }),
     enabled: status === 'authenticated' && chevalId != null,

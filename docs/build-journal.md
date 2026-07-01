@@ -3662,3 +3662,227 @@ les comptes invité (4.6), **aucun** bilan (4.4/4.5), **rien** au set héros (3.
 | CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 5.1 inclus) — **aucune migration** en 5.1 | ✅ |
 
 ---
+
+## Lot 4.6 — Comptes invité · accès client (pro) · 2026-07-01
+
+Nouveau module **`guest-access`** (api) + **table `acces_invite`** (Modèle §3,
+back-doc) + tranche **`app`** (coquille invité) : un coach **pro** associe à une
+**fiche cheval** un **compte invité** pour son client — une **fenêtre vivante** en
+**lecture seule** sur la progression, qui remplace l'envoi de rapports (Spec §9.5).
+Le module porte les **invitations** (plusieurs par cheval, par e-mail), l'**octroi
+scopé à UN cheval**, l'**onboarding invité** et la **révocation** ; il **réutilise**
+feed (3.1) / héros (3.2) / historique (3.4) / analytique (5.1) en **lecture seule
+scopée** — il ne les refait pas. Strictement le lot 4.6 : **aucune** écriture par
+l'invité, **pas** de bilan augmenté (4.5) pour l'invité, **pas** les autres chevaux
+du coach, **pas** de partage de propriété (Spec §9.2).
+
+**Prérequis dur vérifié — 5.1 livré avant de démarrer** : l'invité consulte
+l'**analytique** (heatmap), livrée par le lot **5.1** (entrée de journal présente ;
+module `analytics` en **lecture** ; `AnalyticsService` **exporté** « à cette fin »
+comme annoncé en 5.1). La roadmap impose **5.1 précède 4.6** (§Séquençage) — respecté.
+
+### Emplacement (décisions tranchées)
+
+- **`shared`** : `enums/acces-invite.ts` (`STATUTS_ACCÈS_INVITÉ =
+  en_attente|actif|révoqué`), `types/acces-invite.ts` (`AccèsInvité`, forme de
+  domaine **alignée** sur la ligne Drizzle — comme `BilanAugmenté`), et
+  `schemas/acces-invite.ts` (DTO Zod : `accèsInvitéInviterSchema` `{ email }`,
+  `accèsInvitéAccepterSchema` `{ token }`, `accèsInvitéSortieSchema` **vue coach**
+  sans secret — `invité_relié` dérivé —, `chevalPartagéSchema` **atterrissage
+  invité** `{ cheval_id, cheval_nom }`). Barils enums/types/schemas mis à jour.
+- **Schéma + migration** : `api/src/db/schema/acces-invite.ts` (table `acces_invite`)
+  + enum `acces_invite_statut` (réutilise le tuple `shared`), migration **additive**
+  `api/drizzle/0008_puzzling_banshee.sql` (`CREATE TYPE` + `CREATE TABLE` + 3 FK
+  `ON DELETE CASCADE` + 3 index — **aucune table existante touchée**). Colonnes
+  physiques désaccentuées (`invite_email`, `invite_compte_id`), clés TS accentuées
+  (alignement `shared`, convention `archivé`/`age` de 0.3/4.3). `alignment.spec.ts`
+  gagne l'entrée **Accès invité** (hors colonne technique `token_hash`).
+- **Module `api/src/guest-access/`** : `guest-access.service` (invitations, octroi,
+  autorisation lecture seule scopée, révocation, acceptation, lectures réutilisées),
+  `guest-access.controller` (**gestion coach**, garde Pro), `guest-consultation.controller`
+  (**consultation invité**), `guest-access.errors` (`AccèsInvitéNotFoundError` 404,
+  `InvitationInvalideError` 400, `AccèsInvitéDéjàExistantError` 409),
+  `guest-access.config` (lien d'invitation, TTL 7 j), `guest-access.module` (importe
+  `Horses/Feed/Metrics/Sessions/Analytics/Entitlements` + `Passport`, lie `MAILER →
+  ConsoleMailer`). `FeedModule` **exporte désormais `FeedService`** (extension non
+  destructive, comme metrics/analytics l'ont fait). Port `Mailer` (1.2) étendu de
+  `sendGuestInvitation` (stub log en dev). Enregistré dans `app.module.ts`.
+- **Tranche `app/src/guest-access/`** : `read-scope` (portée owner/guest ↔ préfixe
+  de route, **pur**), `guest-access-api` (inviter/lister/révoquer/accepter/mesAccès),
+  `guest-access-context` (`GuestAccessProvider`/`useGuestAccess`, auto-acceptation
+  d'un jeton en attente), `use-guest-invites` (gestion coach), `pending-invite`
+  (jeton en attente, **pur**), `guest-routing` (`shouldEnterGuestShell`/
+  `guestStateUnresolved`, **pur**), `read-only-banner`, `guest-invites-section`
+  (inviter depuis la fiche cheval), `guest-error-messages`. **Coquille invité** :
+  groupe de routes `app/guest/` (`_layout` 3 onglets **sans (+)/switcher** + bandeau
+  lecture seule ; `index`/`historique`/`analytique` réutilisant les surfaces via le
+  `basePath` invité) + écran `guest-invite.tsx` (acceptation par deep link). Garde de
+  navigation (`app/_layout`) étendue : un **invité pur** atterrit sur `/guest`.
+- **Lectures réutilisées, paramétrées par `basePath`** : `feed-api`/`metrics-api`/
+  `history-api`/`heatmap-api` + leurs hooks + `MetricsHero`/`HeatmapView` acceptent un
+  **`basePath`** (défaut `/horses`) ; la coquille invité passe `/guest-access/horses`.
+  Suffixe de route **identique** des deux côtés → aucune surface dupliquée.
+
+### Décisions tranchées (et pourquoi)
+
+- **L'invité = un compte régulier (1.1) + un octroi scopé (Stack §3.4), pas d'auth
+  parallèle.** L'acceptation **relie** le compte authentifié de l'invité à l'octroi ;
+  toute lecture invité passe par `assertAccèsActif(guestId, chevalId)` qui **scope
+  dans le SQL** (`invité_compte_id = … AND statut = actif`). Un octroi **révoqué**,
+  **en attente** ou visant un **autre** cheval ne matche pas → **404 sans fuite**
+  (même posture que `ChevalNotFoundError`). L'**autorisation scope chaque lecture**,
+  jamais un rôle global.
+- **Réutilisation via les services, scopée au propriétaire.** Les surfaces existantes
+  (`FeedService`, `MetricsService`, `SessionsService.listHistory`, `AnalyticsService`)
+  scopent par `compteId` **propriétaire** et vérifient la propriété. Pour l'invité, on
+  **résout le propriétaire** (`compte_pro_id` de l'octroi) et on appelle **le même**
+  service avec cet id → le cheval lui appartient, la composition est identique. **Zéro
+  reconstruction** (Archi §2/§3) ; les lectures traversent un **contrôleur invité
+  dédié** (`/guest-access/…`) qui porte le contrôle de portée.
+- **`compte_pro_id` enregistré sur l'octroi (dénormalisation assumée).** Plutôt qu'une
+  lecture inter-module non scopée de `cheval` à chaque lecture invité, l'octroi **porte
+  le propriétaire** (vérifié à la création : le coach est authentifié **et** possède le
+  cheval). Sûr car la propriété d'un cheval est **immuable** en v1 (Modèle §3) ; fidèle
+  à « 1 Cheval **détenu par un compte pro** » ; sert aussi la traçabilité RGPD (§9.5).
+  Exclu de rien dans l'alignement (c'est une colonne de domaine) ; **`token_hash`**,
+  lui, est **technique** → exclu (comme `idempotency_key`).
+- **Garde Pro (4.1) sur la seule gestion.** Le **contrôleur de gestion** porte
+  `@RequireCapacité('comptes_invité')` + `EntitlementGuard` → **inviter/lister/révoquer**
+  sont **Pro** (gratuit/premium → **403**). La **consultation invité** n'est **pas**
+  gatée par un tier (l'invité est souvent **gratuit**) : sa portée vient de l'**octroi**,
+  et l'analytique existe car le **propriétaire** est Pro. C'est le point clé prouvé en
+  e2e : un invité **gratuit** lit la heatmap via `/guest-access/…` (200) alors que la
+  route **propriétaire** la lui refuse (403, garde 5.1).
+- **Jeton d'invitation = capacité au porteur (comme vérif/reset 1.2).** À l'invitation,
+  un secret aléatoire est émis, **hashé (SHA-256)** en base (jamais en clair, jamais
+  dans un DTO) et envoyé par e-mail (TEM prod / **stub log** dev). L'acceptation présente
+  le jeton, relie le compte, passe `actif` et **consomme** le jeton (`token_hash = null`).
+  **Sans** exiger que l'e-mail du compte corresponde à l'invité : posséder le jeton
+  prouve la réception (friction minimale, « crée/relie son compte », §9.5).
+- **Onboarding invité — saute la création de cheval (Spec §9.5).** La garde de navigation
+  route un **invité pur** (authentifié, **0 cheval possédé**, **≥ 1 accès partagé**) vers
+  la **coquille invité** `/guest`, **avant** l'onboarding « créer un cheval » ; elle
+  **diffère** la décision d'onboarding tant que l'état invité charge (pas de clignotement).
+  Un jeton ouvert par deep link **avant** login est **mémorisé** puis **auto-accepté** à
+  l'authentification (`pending-invite` + provider) → atterrissage direct.
+- **Coquille invité restreinte (UI/UX §5/§6.7).** Groupe de routes distinct : **3 onglets
+  de consultation** (Feed · Historique · Analytique), **pas de ( + )**, **pas de ✦**
+  (on ne passe **jamais** `augmentéDisponible` — le slot 3.4 reste vide par **absence de
+  donnée**, aucun appel `ai-bilan`), **pas de switcher** (accès scopé à UN cheval), et un
+  **bandeau « lecture seule »** permanent (UI/UX §4). L'analytique invité **ne porte pas**
+  de `LockedFeature` (portée = octroi, pas le tier).
+- **Révocation = coupe la lecture.** `révoquer` passe `statut = révoqué` **et** efface le
+  jeton (scopé `compte_pro_id` → 404 sans fuite) : l'accès **cesse** immédiatement (la
+  garde de portée exige `actif`), une invitation encore en attente devient inacceptable.
+  Ré-inviter après révocation est permis (octroi neuf). **Doublon** non révoqué (même
+  cheval + e-mail) → **409** (pas d'octrois fantômes) ; **plusieurs invités différents**
+  restent permis (§9.5).
+- **Aucune écriture invité (le serveur refuse).** Le module n'expose **aucun** endpoint
+  d'écriture. Viser les routes **propriétaire** (POST séance, PATCH cheval) avec le jeton
+  de l'invité échoue sur la **propriété** (404, il ne possède pas le cheval) ; gérer les
+  invités échoue sur la **garde Pro** (403). Doublement impossible, prouvé en e2e.
+
+### Écarts vs cadrage (consignés)
+
+- **Ajout de la table `acces_invite` (back-doc).** Entité **spécifiée au Modèle §3**
+  mais **non posée en 0.3** (6 entités socle) — comme le Bilan augmenté (4.5). Ajoutée
+  par migration **additive** ; **alignée** sur `shared` (`AccèsInvité`). **À
+  back-documenter dans le Modèle de données** (point ouvert).
+- **`compte_pro_id` dénormalisé** (cf. décision) : colonne non littérale au Modèle §3
+  mais fidèle à « détenu par un compte pro », justifiée par l'immuabilité de la propriété
+  et l'évitement d'un couplage de lecture inter-module. Consignée.
+- **`FeedService` exporté** (comme `SessionsService`/`MetricsService`/`AnalyticsService`
+  avant lui) : extension **non destructive** pour la réutilisation invité.
+- **Port `Mailer` étendu** d'une méthode (`sendGuestInvitation`) et **lié localement**
+  dans `guest-access` (`ConsoleMailer`, stub dev) — même seam que l'auth (1.2), permuté
+  vers TEM en prod sans toucher au domaine. Pas d'import du module `auth-account` (juste
+  le port + le stub, fichiers infra transverses).
+- **Lectures paramétrées par `basePath`** (string, défaut `/horses`) plutôt qu'un couplage
+  des hooks feed/metrics/… au module `guest-access` : découplage propre, la coquille
+  invité passe `GUEST_READ_BASE`. La clé de cache porte le `basePath` (owner ≠ guest).
+- **Acceptation en `200`** (et non `201`) : bascule d'état d'un octroi **existant**
+  (comme `archive`/`unarchive` de 4.3), pas une création à un nouveau URI.
+- **E-mail invité normalisé en minuscules** (dédoublonnage cohérent (cheval, e-mail)).
+- **Tests app = logique pure (Node)**, cohérent avec 1.4+ : `read-scope` (3),
+  `guest-access-api` (5), `guest-routing` (9), `pending-invite` (4) ; les écrans/coquille
+  sont prouvés par `tsc` **et** l'**export Metro web** (routes `/guest`,
+  `/guest/historique`, `/guest/analytique`, `/guest-invite` bundlées).
+
+### Points laissés ouverts (reports explicites)
+
+- **Séquençage — 4.6 restait bloqué tant que 5.1 n'était pas livré** (l'invité consulte
+  l'analytique). Débloqué : 5.1 est livré (`AnalyticsService` exporté). C'était le
+  **prérequis dur** de la roadmap (§Séquençage : 5.1 précède 4.6).
+- **Interaction 4.3 (archivage ↔ invités).** Archiver un cheval **porteur d'invités**
+  devient la **lecture seule d'un cheval déjà en lecture seule** : l'invité ne saisit
+  déjà rien, et les lectures empruntent le chemin **permissif** (`horses.findOne`) → un
+  cheval archivé **reste consultable** par ses invités (données figées), conforme au
+  journal 4.3 (« Rien à faire ici »). On **autorise** d'ailleurs d'inviter sur un cheval
+  archivé (aucune raison de le refuser). Une **notification** à l'invité lors de
+  l'archivage n'est **pas** câblée (hors périmètre).
+- **Back-documenter la table `acces_invite` dans le Modèle de données** (§3) — l'entité y
+  est spécifiée ; la **réalité en base** (colonnes, `compte_pro_id`, `token_hash`
+  technique) est à consigner comme pour le Bilan augmenté.
+- **Downgrade du coach (Pro → gratuit/premium) avec invités actifs** : les lectures invité
+  restent servies (le service de composition n'est pas gaté). Suspendre/expirer les accès
+  au downgrade est une **question de cycle de gating** au-delà de la DoD 4.6 ; laissée
+  ouverte.
+- **Invité possédant aussi ses propres chevaux** (coach **et** client) : v1 route vers la
+  coquille invité **uniquement** l'invité **pur** (0 cheval possédé). Fusionner les deux
+  vues (surfacer les accès partagés dans l'onglet régulier) est un enrichissement ultérieur.
+- **Plusieurs chevaux partagés au même invité** : la coquille montre le **premier** (pas
+  de switcher, §6.7). Un sélecteur invité minimal reste possible si l'usage l'exige.
+- **Persistance du jeton en attente** : en mémoire de session (suffit au parcours deep
+  link → auth → acceptation). Un stockage disque n'est pas requis par la DoD.
+
+### Compte rendu — vérifier la DoD
+
+Backend (module `guest-access` + garde serveur) + tranche app (gestion + coquille
+invité). **Parcours de preuve** (e2e `guest-access.spec.ts`, Postgres réel) :
+
+1. **Pro uniquement** : `POST /horses/:id/guest-access` → **403** en gratuit **et** en
+   premium, **201** en pro (garde 4.1 `comptes_invité`).
+2. **Inviter → consulter en lecture seule** : le coach invite (jeton capturé via le port
+   `Mailer` de test, équivalent du stub log dev) ; le client (**compte gratuit**) accepte
+   (`POST /guest-access/accept` → **200**, renvoie `{ cheval_id, cheval_nom }`) ; il lit
+   `GET /guest-access/horses/:id/{feed,metrics,sessions/history,heatmap}` → **200** — y
+   compris l'**analytique** malgré son tier gratuit (portée = octroi). **Onboarding** :
+   son `GET /horses` = `[]` (aucun cheval possédé) mais `GET /guest-access/me` renvoie le
+   cheval partagé → il **saute la création de cheval**.
+3. **Scoping strict** : un **autre** cheval (même coach **ou** autre compte) → **404** ;
+   **écrire** (`POST …/sessions`, `PATCH /horses/:id`) → **404** ; **gérer** les invités
+   → **403**. L'historique du cheval partagé reste **inchangé** (aucune écriture n'a pris).
+4. **Plusieurs invités + révocation** : deux invités **différents** lisent ; révoquer l'un
+   (`DELETE /guest-access/:id` → **204**) **coupe** son accès (feed/heatmap → **404**,
+   `me` → `[]`) **sans** toucher l'autre (toujours **200**).
+5. **App** : fiche cheval → section « Comptes invité » (Pro : inviter + liste + révoquer ;
+   sinon grisé → upgrade). Deep link `/guest-invite?token=…` → acceptation → coquille
+   `/guest` (Feed · Historique · Analytique, **sans ( + )/✦/switcher**, **bandeau lecture
+   seule**).
+
+Commandes : `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build` (tous verts, sans DB) ;
+`pnpm --filter @hpt/api db:verify` exécute les e2e (Postgres requis, **job `db` de la CI**).
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Inviter un client** qui consulte le cheval en **lecture seule** (feed, héros, historique + bilans simples, **analytique 5.1**) | e2e `guest-access.spec.ts` › DoD : invite → accept → `feed/metrics/sessions/history/heatmap` **200** (invité **gratuit**) | ✅ (job `db`) |
+| **Sans saisie, sans autres chevaux, sans ✦** | e2e : écritures → **404** ; autre cheval → **404** ; app : coquille invité ne passe **jamais** `augmentéDisponible` (✦ absent) | ✅ |
+| **Plusieurs invités** par cheval ; **révocable** (l'accès **cesse**) | e2e : 2 invités différents lisent ; `DELETE` → l'un coupé (**404**, `me` `[]`), l'autre intact (**200**) | ✅ (job `db`) |
+| **Scoping serveur** : ni autre cheval, ni écriture | e2e : `/guest-access/horses/{autre}/…` **404** ; `POST …/sessions` & `PATCH /horses/:id` **404** ; gérer **403** | ✅ (job `db`) |
+| **Pro uniquement** (garde 4.1) | e2e : invite gratuit **403**, premium **403**, pro **201** ; consultation invité **non** gatée par le tier | ✅ (job `db`) |
+| **Onboarding invité** : saute la création de cheval | e2e : invité `GET /horses` `[]` **+** `GET /guest-access/me` = cheval partagé ; app : garde route l'invité pur vers `/guest` (test `guest-routing`) | ✅ |
+| **Coquille invité** : pas de ( + ), pas de ✦, pas de switcher, **bandeau lecture seule** | `app/guest/_layout` (3 onglets, banner) ; export Metro : `/guest`, `/guest/historique`, `/guest/analytique`, `/guest-invite` bundlées | ✅ |
+| **Table Accès invité** (Modèle §3) : 1 Cheval pro ; invité compte/e-mail ; statut | migration `0008` additive (`acces_invite` + enum + 3 FK cascade) ; `alignment.spec.ts` aligne `AccèsInvité` (hors `token_hash`) | ✅ |
+| **E-mail d'invitation** : TEM prod / **stub** dev | port `Mailer.sendGuestInvitation` ; `ConsoleMailer` log en dev ; e2e capture via override du port | ✅ |
+| Aucun type d'API dupliqué ; DTO `shared` ; Zod au bord | DTO `@hpt/shared` (`AccèsInvité*`, `ChevalPartagé`) ; entrées validées (`ZodValidationPipe`), sorties strippées | ✅ |
+| Réutilisation (feed/héros/historique/analytique), **0 reconstruction** | services `Feed/Metrics/Sessions/Analytics` **exportés** et consommés ; app via `basePath` invité | ✅ |
+| `pnpm lint` | `biome check .` (412 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app) ; alignement `AccèsInvité` | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **203 (shared, +9)** + **55 (api, +1 alignement)** + **208 (app, +21 guest-access)** | ✅ 466/466 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** OK (routes invité bundlées) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 157 (lots antérieurs) + **6 (guest-access 4.6)** | ✅ 163/163 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` 0→**0008** + `verify`, e2e 4.6 inclus) | ✅ posé |
+
+---

@@ -25,6 +25,12 @@ export interface Mailer {
   sendEmailVerification(message: MailMessage): Promise<void>;
   /** Envoie le lien de **réinitialisation de mot de passe**. */
   sendPasswordReset(message: MailMessage): Promise<void>;
+  /**
+   * Envoie le lien d'**invitation compte invité** (lot 4.6, Stack §3.5 : TEM en
+   * prod, stub log en dev). Le lien porte le jeton d'acceptation ; l'invité
+   * l'ouvre, relie son compte et atterrit sur le cheval partagé en lecture seule.
+   */
+  sendGuestInvitation(message: MailMessage): Promise<void>;
 }
 
 /** Jeton d'injection du port `Mailer`. */
