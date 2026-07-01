@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AiBilanModule } from './ai-bilan/ai-bilan.module';
 import { AuthAccountModule } from './auth-account/auth-account.module';
 import { CombinationsModule } from './combinations/combinations.module';
 import { DatabaseModule } from './db/database.module';
@@ -24,6 +25,7 @@ import { SharingModule } from './sharing/sharing.module';
     MetricsModule,
     SharingModule,
     ProgressionReportModule,
+    AiBilanModule,
   ],
 })
 export class AppModule {}

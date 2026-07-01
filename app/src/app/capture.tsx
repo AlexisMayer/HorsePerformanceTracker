@@ -2,6 +2,7 @@ import { TYPES_SEANCE, type TypeSéance } from '@hpt/shared';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import { AugmentedBilanSection } from '../ai-bilan';
 import { useHorses } from '../horses';
 import {
   ChipGroup,
@@ -71,6 +72,9 @@ function CaptureBody({ chevalId, horseName }: { chevalId: string; horseName: str
               nomCheval={horseName}
               onDismiss={() => router.back()}
             />
+            {/* Bilan augmenté IA (lot 4.5) : proposé à l'enregistrement, premium/pro
+                (verrou 4.2 au gratuit) — à la demande, jamais automatique (§7.1). */}
+            <AugmentedBilanSection seanceId={savedId} chevalId={chevalId} />
             <Button
               label="Modifier la séance"
               variant="ghost"

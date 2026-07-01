@@ -1,5 +1,6 @@
 export * from './abonnement';
 export * from './account-export';
+export * from './ai-bilan';
 export * from './auth';
 export * from './champs-techniques';
 export * from './cheval';

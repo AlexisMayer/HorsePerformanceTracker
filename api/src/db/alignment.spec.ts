@@ -1,4 +1,5 @@
 import type {
+  BilanAugmenté,
   Cheval,
   CombinaisonRéutilisable,
   Compte,
@@ -8,7 +9,16 @@ import type {
   Tour,
 } from '@hpt/shared';
 import { describe, expectTypeOf, it } from 'vitest';
-import type { cheval, combinaison, compte, contexte, obstacle, seance, tour } from './schema';
+import type {
+  bilanAugmente,
+  cheval,
+  combinaison,
+  compte,
+  contexte,
+  obstacle,
+  seance,
+  tour,
+} from './schema';
 
 /**
  * Alignement **Drizzle ↔ `shared`** vérifié **au niveau type** (cascade des
@@ -86,5 +96,16 @@ describe('schéma Drizzle ↔ types `@hpt/shared` (alignement au niveau type)', 
 
   it('Contexte', () => {
     expectTypeOf<NullToOptional<typeof contexte.$inferSelect>>().toEqualTypeOf<Contexte>();
+  });
+
+  it('Bilan augmenté', () => {
+    // Entité **spécifiée au Modèle §3** mais créée seulement en 4.5 (back-doc) :
+    // contrairement aux tables techniques (`refresh_token`, `abonnement`), c'est
+    // une vraie entité de domaine ⇒ elle est **alignée** sur `@hpt/shared`. Toutes
+    // les colonnes sont `NOT NULL` : le domaine `BilanAugmenté` les porte à
+    // l'identique (aucune optionnelle).
+    expectTypeOf<
+      NullToOptional<typeof bilanAugmente.$inferSelect>
+    >().toEqualTypeOf<BilanAugmenté>();
   });
 });

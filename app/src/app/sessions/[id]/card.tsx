@@ -1,5 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { AiBilanCard, useBilanAugmenté } from '../../../ai-bilan';
+import { useEntitlement } from '../../../entitlements';
 import { useHorses } from '../../../horses';
 import { BilanCard, useShareCard } from '../../../sharing';
 import { colors, spacing } from '../../../theme';
@@ -13,9 +15,11 @@ import { BackHeader, Button, EmptyState, Screen } from '../../../ui';
  * quelle séance passée. Aucun nouvel endpoint, aucune logique de carte
  * réimplémentée.
  *
- * Carte **simple** uniquement (gratuite, tous comptes — Spec §8) : pas de bilan
- * augmenté IA (4.5), pas de bilan de progression PDF (4.4). On y **renvoie** vers
- * l'**édition existante** (2.4) — point d'entrée naturel, jamais réimplémenté.
+ * Carte **simple** (gratuite, tous comptes — Spec §8), **plus** le **bilan
+ * augmenté IA relu** (lot 4.5, premium/pro) quand il existe : la relecture passe
+ * par `GET /sessions/:id/ai-bilan` — **aucune régénération** (§7.3). On y
+ * **renvoie** vers l'**édition existante** (2.4) — point d'entrée naturel, jamais
+ * réimplémenté. Pas de bilan de progression PDF ici (4.4, objet distinct).
  */
 export default function SessionCardScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -23,6 +27,12 @@ export default function SessionCardScreen() {
   const { currentHorse } = useHorses();
   const nomCheval = currentHorse?.nom ?? '';
   const { carte, loading, cardRef, partager, sharing } = useShareCard(id ?? null, nomCheval);
+
+  // Relecture du bilan augmenté (premium/pro) — sans régénération (§7.3). Lu
+  // seulement si la capacité est débloquée ; `null` (404) ⇒ rien à afficher.
+  const { entitlement } = useEntitlement();
+  const augmentéCapacité = entitlement?.capacités?.bilan_augmenté ?? false;
+  const augmenté = useBilanAugmenté(id ?? null, augmentéCapacité);
 
   return (
     <Screen scroll contentStyle={styles.content}>
@@ -43,6 +53,9 @@ export default function SessionCardScreen() {
               void partager();
             }}
           />
+          {/* Bilan augmenté IA relu (lot 4.5) — s'affiche seulement s'il existe ;
+              GET, jamais de régénération (§7.3). */}
+          {augmenté.data ? <AiBilanCard bilan={augmenté.data} /> : null}
           {/* Renvoi vers l'édition/suppression existante (2.4) — pas réimplémentée. */}
           <Button
             label="Modifier la séance"

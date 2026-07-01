@@ -8,6 +8,7 @@
  *   Compte → Cheval → Séance → { Obstacle, Tour, Contexte }
  */
 export * from './abonnement';
+export * from './ai-bilan';
 export * from './champs-techniques';
 export * from './cheval';
 export * from './combinaison';
