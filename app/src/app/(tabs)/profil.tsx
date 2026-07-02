@@ -7,7 +7,13 @@ import { useAuth } from '../../auth';
 import { useCombinations } from '../../combinations';
 import { useEntitlement } from '../../entitlements';
 import { useHorses } from '../../horses';
-import { ouvrirGestionMollie, useAbonnement, useAnnulerAbonnement } from '../../subscription';
+import {
+  ouvrirGestionMollie,
+  peutPasserPro,
+  useAbonnement,
+  useAnnulerAbonnement,
+  usePasserPro,
+} from '../../subscription';
 import { colors, spacing } from '../../theme';
 import { Badge, Button, Card, Screen, Text } from '../../ui';
 import { ScreenHeader } from '../../ui/ScreenHeader';
@@ -168,23 +174,31 @@ export default function ProfilScreen() {
 }
 
 /**
- * Carte **Abonnement** (lot 4.2, Spec §9.3) — affiche le forfait et offre :
+ * Carte **Abonnement** (lot 4.2 ; MOD-001, Spec §9.3) — affiche le forfait et offre :
  *  - en **gratuit** → un point d'entrée vers le **paywall** (`/upgrade`) ;
- *  - en **premium/pro** → **gérer/résilier** (renvoi vers l'espace **Mollie** +
- *    résiliation in-app) ;
- *  - un état **pending** honnête si un paiement (SEPA) n'est pas encore confirmé.
+ *  - en **premium** → **Passer à Pro** (changement de formule, MOD-001) + gérer/résilier ;
+ *  - en **pro** → **gérer/résilier** (renvoi vers l'espace **Mollie** + résiliation in-app) ;
+ *  - un état **pending** honnête si un paiement (SEPA) n'est pas encore confirmé —
+ *    pour un upgrade en cours, **au-dessus de l'accès premium conservé** (le tier ne
+ *    bascule qu'au webhook).
  *
  * Le tier vient de l'entitlement (autorité serveur) ; l'état d'abonnement de
- * `GET /me/subscription`.
+ * `GET /me/subscription`. Le CTA « Passer à Pro » n'apparaît que pour un premium
+ * (décision pure `peutPasserPro`) ; la garde reste **serveur**.
  */
 function AbonnementCard({ tier }: { tier: Tier | null }) {
   const router = useRouter();
   const { data } = useAbonnement();
   const annuler = useAnnulerAbonnement();
+  const passerPro = usePasserPro();
   const abonnement = data?.abonnement ?? null;
   const gestionUrl = data?.gestion_url ?? null;
   const enAttente = abonnement?.statut === 'en_attente';
   const payant = tier === 'premium' || tier === 'pro';
+  // CTA de changement de formule : premium uniquement, masqué pendant un pending.
+  const montrerPasserPro = peutPasserPro(tier, abonnement?.statut ?? null);
+  // Un premium en attente = un **upgrade Pro** en cours → l'accès Premium est conservé.
+  const upgradeProEnAttente = enAttente && tier === 'premium';
 
   const confirmerRésiliation = () => {
     Alert.alert(
@@ -209,13 +223,27 @@ function AbonnementCard({ tier }: { tier: Tier | null }) {
 
       {enAttente ? (
         <Text variant="body" color="textMuted">
-          Paiement en attente — ton accès s’ouvrira dès la confirmation (un prélèvement SEPA peut
-          prendre un peu de temps).
+          {upgradeProEnAttente
+            ? 'Passage à Pro en cours — ton accès Premium reste actif jusqu’à la confirmation du paiement (un prélèvement SEPA peut prendre un peu de temps).'
+            : 'Paiement en attente — ton accès s’ouvrira dès la confirmation (un prélèvement SEPA peut prendre un peu de temps).'}
         </Text>
       ) : null}
 
       {payant ? (
         <View style={styles.aboActions}>
+          {montrerPasserPro ? (
+            <>
+              <Text variant="body" color="textMuted">
+                Tu coaches ? Passe à Pro pour suivre plusieurs chevaux et ouvrir des accès clients.
+              </Text>
+              <Button
+                label="Passer à Pro"
+                loadingLabel="Ouverture du paiement…"
+                loading={passerPro.isPending}
+                onPress={() => passerPro.mutate()}
+              />
+            </>
+          ) : null}
           {gestionUrl ? (
             <Button
               variant="secondary"

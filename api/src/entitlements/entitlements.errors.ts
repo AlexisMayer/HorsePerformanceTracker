@@ -52,3 +52,37 @@ export class QuotaDépasséError extends DomainError {
     this.publicMessage = MESSAGES_QUOTA[clé];
   }
 }
+
+/**
+ * Le **changement de formule** (premium→pro, MOD-001) n'est **pas applicable** à
+ * ce compte : réservé aux comptes **déjà premium** avec un mandat SEPA
+ * réutilisable. Levée si le compte est **gratuit** (il doit *souscrire*, pas
+ * *changer de formule*) ou **déjà pro** (rien à faire ; le downgrade est hors
+ * périmètre) — ou, cas de données incohérentes, si aucun abonnement premium
+ * porteur de mandat n'est retrouvé. **403** (authentifié, mais l'opération ne lui
+ * est pas ouverte) — **autorité serveur** du gating (Architecture §5).
+ */
+export class ChangementFormuleInvalideError extends DomainError {
+  readonly status = 403;
+  readonly publicMessage =
+    'Le passage à Pro est réservé aux comptes Premium. Souscris d’abord un forfait pour changer de formule.';
+  constructor(raison: string) {
+    super(`Changement de formule premium→pro refusé : ${raison}.`);
+  }
+}
+
+/**
+ * Une **souscription neuve** est demandée alors qu'un abonnement est déjà `actif`
+ * ou `en_attente` (MOD-001) — garde **anti double-facturation** : créer un second
+ * abonnement Mollie double-prélèverait le client. Le passage premium→pro doit
+ * emprunter le **changement de formule** (réutilise le mandat, résilie l'ancien).
+ * **409 Conflict** : l'état courant du compte s'oppose à la création demandée.
+ */
+export class AbonnementDéjàEnCoursError extends DomainError {
+  readonly status = 409;
+  readonly publicMessage =
+    'Un abonnement est déjà actif ou en cours. Gère-le depuis ton profil plutôt que d’en créer un second.';
+  constructor() {
+    super('Souscription neuve refusée : un abonnement actif/en attente existe déjà.');
+  }
+}

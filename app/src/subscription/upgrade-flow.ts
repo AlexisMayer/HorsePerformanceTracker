@@ -1,4 +1,4 @@
-import type { TierPayant } from '@hpt/shared';
+import type { StatutAbonnement, Tier, TierPayant } from '@hpt/shared';
 import type { CheckoutNavigateurPort, RésultatNavigateurCheckout } from './checkout-browser-port';
 import type { SubscriptionApi } from './subscription-api';
 
@@ -49,4 +49,22 @@ export async function lancerUpgrade(
   // pendant le checkout (ou rester en attente si SEPA non confirmé).
   await deps.rafraîchir();
   return { retour };
+}
+
+/**
+ * **Peut-on proposer « Passer à Pro » ?** (MOD-001) — décision **pure et testable**
+ * du CTA de changement de formule au Profil. Le changement de formule est réservé
+ * au tier **premium** : un **gratuit** *souscrit* (paywall), un **pro** n'a rien à
+ * changer (downgrade hors périmètre). On **masque** le CTA tant qu'un changement est
+ * déjà `en_attente` — l'écran affiche alors l'état *pending* honnête **au-dessus de
+ * l'accès premium conservé**, sans risque de re-déclencher un second paiement.
+ *
+ * L'autorité reste **serveur** (garde `changer-formule`) : ce prédicat ne fait que
+ * piloter l'affichage, jamais le tier.
+ */
+export function peutPasserPro(
+  tier: Tier | null,
+  statutAbonnement: StatutAbonnement | null,
+): boolean {
+  return tier === 'premium' && statutAbonnement !== 'en_attente';
 }

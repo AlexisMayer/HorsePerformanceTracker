@@ -3,6 +3,7 @@ import type {
   CheckoutCree,
   CreerAbonnementParams,
   CreerCheckoutParams,
+  CreerPaiementChangementParams,
   MolliePort,
   PaiementMollie,
   StatutPaiementMollie,
@@ -31,6 +32,15 @@ export class FakeMollie implements MolliePort {
   private readonly checkoutUrls = new Map<string, string>();
   private compteur = 0;
 
+  /**
+   * Journaux d'appels (dev/test, hors `MolliePort`) : permettent aux tests de
+   * prouver **quel** abonnement récurrent a été créé (client/mandat **réutilisés**
+   * au changement de formule) et **quel** abonnement a été **résilié** (pas de
+   * double facturation). Append-only ; le PSP réel ne journalise rien de tel.
+   */
+  readonly abonnementsCréés: CreerAbonnementParams[] = [];
+  readonly abonnementsAnnulés: { customerId: string; subscriptionId: string }[] = [];
+
   async créerCheckout(params: CreerCheckoutParams): Promise<CheckoutCree> {
     this.compteur += 1;
     const paymentId = `tr_fake_${this.compteur}`;
@@ -49,6 +59,27 @@ export class FakeMollie implements MolliePort {
     return { paymentId, customerId, checkoutUrl };
   }
 
+  /**
+   * **Changement de formule** (premium→pro) : paiement sur le **client + mandat
+   * existants** (aucun nouveau client/mandat créé). Le paiement **porte le mandat
+   * réutilisé** dès sa création (préservé par `simulerPaiement`) → à sa
+   * confirmation, `réconcilier` crée l'abonnement pro **sur ce même mandat**.
+   */
+  async créerPaiementChangement(params: CreerPaiementChangementParams): Promise<CheckoutCree> {
+    this.compteur += 1;
+    const paymentId = `tr_fake_${this.compteur}`;
+    this.paiements.set(paymentId, {
+      id: paymentId,
+      statut: 'open',
+      customerId: params.customerId,
+      mandateId: params.mandateId,
+      metadata: params.metadata,
+    });
+    const checkoutUrl = `${params.webhookUrl}/dev/checkout/${paymentId}`;
+    this.checkoutUrls.set(paymentId, checkoutUrl);
+    return { paymentId, customerId: params.customerId, checkoutUrl };
+  }
+
   async lirePaiement(paymentId: string): Promise<PaiementMollie> {
     const paiement = this.paiements.get(paymentId);
     if (!paiement) {
@@ -64,13 +95,15 @@ export class FakeMollie implements MolliePort {
     return { ...paiement };
   }
 
-  async créerAbonnement(_params: CreerAbonnementParams): Promise<{ subscriptionId: string }> {
+  async créerAbonnement(params: CreerAbonnementParams): Promise<{ subscriptionId: string }> {
+    this.abonnementsCréés.push(params);
     this.compteur += 1;
     return { subscriptionId: `sub_fake_${this.compteur}` };
   }
 
-  async annulerAbonnement(_params: { customerId: string; subscriptionId: string }): Promise<void> {
-    // No-op : rien à appeler côté PSP en fake.
+  async annulerAbonnement(params: { customerId: string; subscriptionId: string }): Promise<void> {
+    // No-op côté PSP ; on journalise pour prouver la résiliation (pas de double facturation).
+    this.abonnementsAnnulés.push(params);
   }
 
   /**
@@ -90,7 +123,11 @@ export class FakeMollie implements MolliePort {
     this.paiements.set(paymentId, {
       ...paiement,
       statut,
-      mandateId: honoré ? (options.mandateId ?? `mdt_fake_${paymentId}`) : null,
+      // Honoré : on **préserve** un mandat déjà porté (changement de formule → mandat
+      // réutilisé) ; sinon on en pose un neuf (souscription neuve). Non honoré : aucun.
+      mandateId: honoré
+        ? (options.mandateId ?? paiement.mandateId ?? `mdt_fake_${paymentId}`)
+        : null,
     });
     return true;
   }

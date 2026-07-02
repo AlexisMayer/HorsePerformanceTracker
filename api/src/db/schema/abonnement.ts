@@ -1,4 +1,4 @@
-import { index, pgTable, text, uuid } from 'drizzle-orm/pg-core';
+import { type AnyPgColumn, index, pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { champsTechniques } from './champs-techniques';
 import { compte } from './compte';
 import { abonnementStatutEnum, abonnementTierEnum } from './enums';
@@ -44,6 +44,22 @@ export const abonnement = pgTable(
     mollie_subscription_id: text('mollie_subscription_id'),
     /** Réf. du **mandat** (SEPA/carte) confirmé — présent quand le paiement est honoré. */
     mollie_mandate_id: text('mollie_mandate_id'),
+    /**
+     * **Changement de formule** (MOD-001, upgrade premium→pro) : quand cette ligne
+     * est un changement de formule (et **non** une souscription neuve, 4.2), elle
+     * référence l'abonnement **premium remplacé** — celui à **résilier** au webhook
+     * qui confirme la formule pro (le mandat, lui, est **réutilisé**, cf.
+     * `mollie_mandate_id`). `null` pour une souscription neuve : c'est **le** signal
+     * qui distingue les deux flux à la réconciliation (le chemin neuf reste inchangé).
+     *
+     * Lien **latéral** (pas la chaîne de propriété Compte→…) : la cascade RGPD passe
+     * par `compte_id` ; ce self-lien est en **`ON DELETE SET NULL`** pour ne jamais
+     * bloquer la purge.
+     */
+    remplace_abonnement_id: uuid('remplace_abonnement_id').references(
+      (): AnyPgColumn => abonnement.id,
+      { onDelete: 'set null' },
+    ),
   },
   (table) => [
     index('abonnement_compte_id_idx').on(table.compte_id),

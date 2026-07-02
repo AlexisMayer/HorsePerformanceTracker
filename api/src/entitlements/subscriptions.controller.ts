@@ -18,8 +18,11 @@ import { SubscriptionsService } from './subscriptions.service';
  *
  *  - `GET /me/subscription/offres` — tarifs (montants **lus de la config**) pour
  *    le paywall ;
- *  - `POST /me/subscription/checkout` — démarre le checkout Mollie (n'élève pas
- *    le tier — autorité du webhook) ;
+ *  - `POST /me/subscription/checkout` — démarre le checkout Mollie d'une
+ *    souscription **neuve** (n'élève pas le tier — autorité du webhook) ;
+ *  - `POST /me/subscription/changer-formule` — **upgrade premium→pro** (MOD-001) :
+ *    résilie le premium + crée le pro sur le **mandat réutilisé**, réservé aux
+ *    comptes **déjà premium** ; le tier ne bascule qu'au webhook ;
  *  - `GET /me/subscription` — état d'abonnement (pour l'état *pending* /
  *    déverrouillé) + URL de gestion Mollie ;
  *  - `POST /me/subscription/annuler` — résiliation (gestion fine côté Mollie).
@@ -43,6 +46,20 @@ export class SubscriptionsController {
     @Body(new ZodValidationPipe(checkoutDemandeSchema)) dto: CheckoutDemandeDto,
   ): Promise<CheckoutSortie> {
     return this.subscriptions.créerCheckout(user.id, user.email, dto.tier_cible);
+  }
+
+  /**
+   * **Passer à Pro** (upgrade premium→pro, MOD-001, Spec §9.3) — changement de
+   * formule *distinct* de la souscription neuve, réservé aux comptes **déjà
+   * premium** (garde côté service sur le tier du principal). Aucun corps : la seule
+   * cible d'upgrade est `pro`. Renvoie l'URL de checkout du **paiement pro sur le
+   * mandat réutilisé** ; le tier ne bascule qu'au **webhook** (accès premium
+   * conservé jusque-là).
+   */
+  @Post('changer-formule')
+  @HttpCode(200)
+  changerFormule(@CurrentUser() user: AuthenticatedUser): Promise<CheckoutSortie> {
+    return this.subscriptions.changerFormule(user.id, user.tier);
   }
 
   /** État d'abonnement du compte courant + URL de gestion Mollie (renvoi). */

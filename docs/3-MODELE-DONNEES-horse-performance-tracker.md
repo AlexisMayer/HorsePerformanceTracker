@@ -109,6 +109,10 @@ Un **cheval appartient à un seul compte** (pas de partage en v1) : un demi-pens
 
 **Champs techniques communs** à toutes les entités (implicites, non répétés ci-dessus) : `id`, `created_at`, `updated_at`. Le `niveau` du cheval est volontairement **grossier** (`amateur | pro`) en v1, extensible plus tard sans casse.
 
+**Tables techniques (hors modèle métier), back-documentées.** Certaines tables soutiennent l'infrastructure sans être des entités du domaine (même statut que `refresh_token` / `verification_token`, non alignées sur `shared`) :
+- **`abonnement`** (lot 4.2) — état de l'abonnement Mollie d'un Compte : `tier_cible` (premium/pro), `statut` (`en_attente | actif | annulé | échoué`) et **références opaques Mollie** (`customer` / `payment` / `subscription` / `mandate`). **RGPD/minimisation** : aucune donnée de cheval, aucun moyen de paiement (ceux-ci restent chez Mollie) ; FK `compte_id` en **`ON DELETE CASCADE`** (purge RGPD). Le `tier` du Compte n'est élevé qu'au **webhook** confirmant le paiement (autorité serveur).
+  - **`remplace_abonnement_id`** (MOD-001, self-lien nullable, `ON DELETE SET NULL`) — pour un **changement de formule premium→pro**, référence l'abonnement premium **remplacé** (à résilier au webhook, mandat **réutilisé**) ; `null` pour une souscription neuve. C'est le signal qui **distingue** un changement de formule d'une souscription neuve. Lien **latéral** (pas la chaîne de propriété) : la cascade RGPD passe par `compte_id`.
+
 ---
 
 ## 4. Structure de la séance

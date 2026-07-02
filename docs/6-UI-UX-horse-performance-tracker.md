@@ -91,7 +91,7 @@ L'élément mémorable, tiré du monde du CSO : **la hauteur est représentée c
 - **Historique** — toutes les séances passées et l'accès à leurs **bilans** (simple ✓ / augmenté ✦).
 - **( + ) Saisie** — bouton central, l'action cœur, toujours à portée de pouce.
 - **Analytique** — diagnostic (premium/pro ; grisé sinon).
-- **Profil** — compte, tier, chevaux, abonnement, invités.
+- **Profil** — compte, tier, chevaux, abonnement (souscrire · **Passer à Pro** pour un premium · gérer · résilier), invités.
 - **Sélecteur de cheval** : en **en-tête** (haut de Feed/Historique/Analytique), bascule rapide entre chevaux (pro).
 
 **Coquille invité (lecture seule)** : mêmes onglets de consultation (Feed · Historique · Analytique) **sans** le bouton ( + ), **sans** bilan augmenté, **sans** sélecteur multi-chevaux — un bandeau « lecture seule » est visible.
@@ -250,6 +250,8 @@ L'élément mémorable, tiré du monde du CSO : **la hauteur est représentée c
 │      [ Continuer → ]   │  → checkout Mollie
 └───────────────────────┘
 ```
+
+- **Passer à Pro (depuis le Profil)** : un compte **premium** dispose d'un CTA **« Passer à Pro »** dans sa carte Abonnement (à côté de *Gérer* / *Résilier*), invitant les coachs au tier supérieur. Il **réutilise le même flux de checkout** que le paywall (navigateur in-app/externe), mais déclenche un **changement de formule** (mandat réutilisé, premium résilié — pas une souscription en doublon). Pendant la confirmation, l'écran affiche un **état *pending* honnête au-dessus de l'accès premium conservé** ; le tier ne bascule qu'au **webhook**. Le paywall §6.8, lui, reste le point d'entrée des **souscriptions neuves** (gratuit→premium/pro).
 
 ---
 

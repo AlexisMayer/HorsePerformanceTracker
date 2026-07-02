@@ -39,6 +39,17 @@ describe('createSubscriptionApi', () => {
     expect(res.checkout_url).toContain('mollie');
   });
 
+  it('changerFormule → POST /me/subscription/changer-formule (upgrade premium→pro)', async () => {
+    const { client, request } = fakeClient({
+      checkout_url: 'https://www.mollie.com/checkout/test/def',
+      abonnement_id: '22222222-2222-2222-2222-222222222222',
+    });
+    const res = await createSubscriptionApi(client).changerFormule();
+    expect(request).toHaveBeenCalledWith('/me/subscription/changer-formule', { method: 'POST' });
+    expect(res.checkout_url).toContain('mollie');
+    expect(res.abonnement_id).toBe('22222222-2222-2222-2222-222222222222');
+  });
+
   it('getStatut → GET /me/subscription (statut + gestion)', async () => {
     const { client, request } = fakeClient({
       abonnement: { statut: 'en_attente', tier_cible: 'premium' },

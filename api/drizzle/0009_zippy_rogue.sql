@@ -1,0 +1,2 @@
+ALTER TABLE "abonnement" ADD COLUMN "remplace_abonnement_id" uuid;--> statement-breakpoint
+ALTER TABLE "abonnement" ADD CONSTRAINT "abonnement_remplace_abonnement_id_abonnement_id_fk" FOREIGN KEY ("remplace_abonnement_id") REFERENCES "public"."abonnement"("id") ON DELETE set null ON UPDATE no action;

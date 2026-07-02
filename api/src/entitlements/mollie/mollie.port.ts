@@ -78,6 +78,29 @@ export interface PaiementMollie {
   metadata: Partial<MetadonneesAbonnement> | null;
 }
 
+/**
+ * Paramètres d'un **changement de formule** (MOD-001, premium→pro) : un paiement
+ * **sur le mandat existant** du client (aucun nouveau client ni mandat créé — le
+ * mandat est attaché au **client** Mollie, pas à l'abonnement). C'est l'analogue
+ * du premier paiement de la souscription neuve, mais **`sequenceType: recurring`**
+ * (le mandat est déjà là) : sa confirmation par webhook déclenche la bascule pro
+ * (résiliation du premium + création du pro sur ce même mandat, cf.
+ * `subscriptions.service`). **Sans proration** (Stack §6 — tarif plat mono-tier).
+ */
+export interface CreerPaiementChangementParams {
+  /** Client Mollie **existant** (celui de l'abonnement premium) — réutilisé, jamais recréé. */
+  customerId: string;
+  /** Mandat **existant** à réutiliser (issu du premier paiement premium) ; `null` ⇒ Mollie choisit. */
+  mandateId: string | null;
+  montant: MontantMollie;
+  description: string;
+  /** Deep link de retour dans l'app (le tier ne bascule qu'au webhook). */
+  redirectUrl: string;
+  /** URL publique du webhook (Mollie y postera l'id de paiement). */
+  webhookUrl: string;
+  metadata: MetadonneesAbonnement;
+}
+
 export interface CreerAbonnementParams {
   customerId: string;
   montant: MontantMollie;
@@ -94,6 +117,12 @@ export interface CreerAbonnementParams {
 export interface MolliePort {
   /** Crée le client + le premier paiement (mandat) ; renvoie l'URL de checkout. */
   créerCheckout(params: CreerCheckoutParams): Promise<CheckoutCree>;
+  /**
+   * **Changement de formule** (premium→pro) : paiement sur le **mandat existant**
+   * du client (aucun nouveau client/mandat). Sa confirmation par webhook déclenche
+   * la bascule pro. Renvoie l'id de paiement (clé du webhook) + l'URL de retour.
+   */
+  créerPaiementChangement(params: CreerPaiementChangementParams): Promise<CheckoutCree>;
   /** Lit l'état courant d'un paiement (appelé à la réception du webhook). */
   lirePaiement(paymentId: string): Promise<PaiementMollie>;
   /** Crée l'abonnement récurrent une fois le mandat valide. */

@@ -25,6 +25,12 @@ export interface SubscriptionApi {
   getOffres(): Promise<OffresSortie>;
   /** Démarre un checkout Mollie pour le tier choisi ; renvoie l'URL à ouvrir. */
   createCheckout(tierCible: TierPayant): Promise<CheckoutSortie>;
+  /**
+   * **Passer à Pro** (changement de formule premium→pro, MOD-001) : démarre le
+   * paiement pro **sur le mandat réutilisé** (résilie le premium côté serveur au
+   * webhook) ; renvoie l'URL à ouvrir. Réservé aux comptes premium (garde serveur).
+   */
+  changerFormule(): Promise<CheckoutSortie>;
   /** État d'abonnement courant (+ URL de gestion Mollie). */
   getStatut(): Promise<AbonnementStatutSortie>;
   /** Résilie l'abonnement courant ; renvoie le nouvel état. */
@@ -43,6 +49,10 @@ export function createSubscriptionApi(client: ApiClient): SubscriptionApi {
           method: 'POST',
           body: { tier_cible: tierCible },
         }),
+      ),
+    changerFormule: async () =>
+      checkoutSortieSchema.parse(
+        await client.request<unknown>('/me/subscription/changer-formule', { method: 'POST' }),
       ),
     getStatut: async () =>
       abonnementStatutSortieSchema.parse(

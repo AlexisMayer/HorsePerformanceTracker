@@ -42,8 +42,17 @@ const pool = new Pool({ connectionString: DATABASE_URL });
 const PASSWORD = 'motdepasse-solide';
 
 let app: INestApplication;
-// Type minimal du levier de simulation du FakeMollie (sans importer le module api ici).
-let fakeMollie: { simulerPaiement: (id: string, statut?: string) => boolean };
+// Type minimal du FakeMollie (sans importer le module api ici) : levier de simulation
+// + journaux d'appels (MOD-001) pour prouver « mandat réutilisé » et « premium résilié ».
+let fakeMollie: {
+  simulerPaiement: (id: string, statut?: string) => boolean;
+  abonnementsCréés: Array<{
+    customerId: string;
+    mandateId: string | null;
+    metadata: { abonnementId: string; tierCible: string };
+  }>;
+  abonnementsAnnulés: Array<{ customerId: string; subscriptionId: string }>;
+};
 
 async function http() {
   return request(app.getHttpServer());
@@ -104,6 +113,48 @@ async function statutAbonnement(token: string) {
     abonnement: { statut: string; tier_cible: string } | null;
     gestion_url: string | null;
   };
+}
+
+/** Souscrit un tier (souscription neuve) + webhook honoré ; renvoie un jeton **frais** (claim à jour). */
+async function souscrireEtConfirmer(
+  account: TestAccount,
+  tier: 'premium' | 'pro',
+): Promise<string> {
+  const { paymentId } = await lancerCheckout(account.accessToken, tier);
+  fakeMollie.simulerPaiement(paymentId, 'paid');
+  await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+  return loginToken(account.email);
+}
+
+/** Déclenche le changement de formule premium→pro ; renvoie l'abonnement pro + le paymentId. */
+async function lancerChangementFormule(token: string) {
+  const res = await (await http())
+    .post('/me/subscription/changer-formule')
+    .set(bearer(token))
+    .expect(200);
+  expect(res.body.checkout_url).toContain('/webhooks/mollie/dev/checkout/');
+  expect(res.body.abonnement_id).toMatch(/[0-9a-f-]{36}/);
+  const paymentId = String(res.body.checkout_url).split('/').pop() as string;
+  return { abonnementId: res.body.abonnement_id as string, paymentId };
+}
+
+/** Lignes `abonnement` du compte (lecture directe DB) — pour prouver l'état du swap. */
+async function abonnementRows(compteId: string) {
+  const { rows } = await pool.query(
+    `SELECT id, tier_cible, statut, mollie_customer_id, mollie_subscription_id,
+            mollie_mandate_id, remplace_abonnement_id
+       FROM abonnement WHERE compte_id = $1 ORDER BY created_at ASC`,
+    [compteId],
+  );
+  return rows as Array<{
+    id: string;
+    tier_cible: string;
+    statut: string;
+    mollie_customer_id: string | null;
+    mollie_subscription_id: string | null;
+    mollie_mandate_id: string | null;
+    remplace_abonnement_id: string | null;
+  }>;
 }
 
 beforeAll(async () => {
@@ -274,5 +325,152 @@ describe('Page de simulation dev (webhooks simulables localement, mode fake)', (
     expect(res.headers.location).toBe('hpt://upgrade-return');
 
     expect((await entitlement(await loginToken(a.email))).tier).toBe('pro');
+  });
+});
+
+/**
+ * Preuve **de bout en bout** du **changement de formule premium→pro** (MOD-001).
+ * On prouve la DoD : un premium **change de formule** (résiliation premium +
+ * création pro, **mandat réutilisé**), **pas** de second abonnement en doublon ;
+ * le **webhook fait foi** (avant lui, tier premium/pending ; après, pro) ; **un
+ * seul abonnement actif** à l'issue ; **accès premium conservé** pendant la
+ * fenêtre pending ; la **garde** refuse un non-premium ; la souscription neuve
+ * refuse un déjà-abonné (anti double-facturation).
+ */
+describe('Changement de formule premium→pro (MOD-001)', () => {
+  it('premium → pro : mandat réutilisé, premium résilié, un seul actif, webhook fait foi', async () => {
+    const a = await registerAndLogin('cf-upgrade@hpt.test');
+    const premiumToken = await souscrireEtConfirmer(a, 'premium');
+    expect((await entitlement(premiumToken)).tier).toBe('premium');
+
+    const [premiumAvant] = await abonnementRows(a.compteId);
+    expect(premiumAvant.statut).toBe('actif');
+    expect(premiumAvant.mollie_mandate_id).toBeTruthy();
+    expect(premiumAvant.mollie_subscription_id).toBeTruthy();
+
+    // Déclenche le changement de formule (paiement pro sur le mandat existant).
+    const { paymentId, abonnementId: proId } = await lancerChangementFormule(premiumToken);
+
+    // AVANT webhook pro : tier RESTE premium (accès conservé) ; état pending honnête.
+    expect((await entitlement(await loginToken(a.email))).tier).toBe('premium');
+    expect((await statutAbonnement(premiumToken)).abonnement).toEqual({
+      statut: 'en_attente',
+      tier_cible: 'pro',
+    });
+    // Le premium n'est PAS encore résilié tant que le pro n'est pas confirmé.
+    const proAvant = (await abonnementRows(a.compteId)).find((r) => r.id === proId);
+    expect(proAvant?.remplace_abonnement_id).toBe(premiumAvant.id);
+    expect((await abonnementRows(a.compteId)).find((r) => r.id === premiumAvant.id)?.statut).toBe(
+      'actif',
+    );
+
+    // Webhook pro confirmé → autorité du tier.
+    fakeMollie.simulerPaiement(paymentId, 'paid');
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+
+    // APRÈS webhook : tier PRO (au re-login = claim frais).
+    const proEnt = await entitlement(await loginToken(a.email));
+    expect(proEnt.tier).toBe('pro');
+    expect(proEnt.capacités).toMatchObject({ multi_chevaux: true, comptes_invité: true });
+
+    // Un seul abonnement actif : premium annulé, pro actif.
+    const rows = await abonnementRows(a.compteId);
+    const premiumFinal = rows.find((r) => r.tier_cible === 'premium');
+    const proFinal = rows.find((r) => r.tier_cible === 'pro');
+    expect(premiumFinal?.statut).toBe('annulé');
+    expect(proFinal?.statut).toBe('actif');
+    expect(rows.filter((r) => r.statut === 'actif')).toHaveLength(1);
+
+    // Mandat & client RÉUTILISÉS (pas un second mandat créé).
+    expect(proFinal?.mollie_mandate_id).toBe(premiumAvant.mollie_mandate_id);
+    expect(proFinal?.mollie_customer_id).toBe(premiumAvant.mollie_customer_id);
+
+    // Côté Mollie : abonnement pro créé sur le mandat réutilisé ; premium résilié.
+    const proSub = fakeMollie.abonnementsCréés.find((s) => s.metadata.abonnementId === proId);
+    expect(proSub?.mandateId).toBe(premiumAvant.mollie_mandate_id);
+    expect(proSub?.customerId).toBe(premiumAvant.mollie_customer_id);
+    expect(fakeMollie.abonnementsAnnulés).toContainEqual({
+      customerId: premiumAvant.mollie_customer_id,
+      subscriptionId: premiumAvant.mollie_subscription_id,
+    });
+  });
+
+  it('paiement pro EN ATTENTE (SEPA) : reste pending, accès premium conservé (jamais gratuit)', async () => {
+    const a = await registerAndLogin('cf-pending@hpt.test');
+    const premiumToken = await souscrireEtConfirmer(a, 'premium');
+    const { paymentId } = await lancerChangementFormule(premiumToken);
+
+    // Webhook reçu mais paiement pro encore « pending ».
+    fakeMollie.simulerPaiement(paymentId, 'pending');
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+
+    // Toujours pending, et l'entitlement effectif reste PREMIUM (jamais gratuit/verrouillé).
+    expect((await statutAbonnement(premiumToken)).abonnement?.statut).toBe('en_attente');
+    const ent = await entitlement(await loginToken(a.email));
+    expect(ent.tier).toBe('premium');
+    expect(ent.capacités.analytique_diagnostic).toBe(true);
+    // Le premium n'est pas résilié tant que le pro n'a pas basculé.
+    const rows = await abonnementRows(a.compteId);
+    expect(rows.find((r) => r.tier_cible === 'premium')?.statut).toBe('actif');
+  });
+
+  it('la garde refuse le changement de formule à un GRATUIT (403) — il doit souscrire', async () => {
+    const a = await registerAndLogin('cf-gratuit@hpt.test');
+    await (await http())
+      .post('/me/subscription/changer-formule')
+      .set(bearer(a.accessToken))
+      .expect(403);
+    expect(await abonnementRows(a.compteId)).toHaveLength(0);
+  });
+
+  it('la garde refuse le changement de formule à un PRO (403) — downgrade hors périmètre', async () => {
+    const a = await registerAndLogin('cf-deja-pro@hpt.test');
+    const proToken = await souscrireEtConfirmer(a, 'pro');
+    expect((await entitlement(proToken)).tier).toBe('pro');
+    await (await http()).post('/me/subscription/changer-formule').set(bearer(proToken)).expect(403);
+  });
+
+  it('un premium ne peut PAS créer une souscription NEUVE (409) — anti double-facturation', async () => {
+    const a = await registerAndLogin('cf-nodup@hpt.test');
+    const premiumToken = await souscrireEtConfirmer(a, 'premium');
+
+    // Chemin de souscription neuve « pro » = celui qui doublerait l'abonnement → refusé.
+    await (await http())
+      .post('/me/subscription/checkout')
+      .set(bearer(premiumToken))
+      .send({ tier_cible: 'pro' })
+      .expect(409);
+
+    // Toujours un seul abonnement (le premium) : aucun doublon créé.
+    expect(await abonnementRows(a.compteId)).toHaveLength(1);
+  });
+
+  it('croisement : résiliation premium programmée PUIS upgrade → cohérent (premium annulé, pro actif)', async () => {
+    const a = await registerAndLogin('cf-cross@hpt.test');
+    const premiumToken = await souscrireEtConfirmer(a, 'premium');
+
+    // Résiliation premium programmée (renvoi/annulation in-app de 4.2).
+    await (await http()).post('/me/subscription/annuler').set(bearer(premiumToken)).expect(200);
+    expect((await abonnementRows(a.compteId))[0].statut).toBe('annulé');
+    const annulésAvant = fakeMollie.abonnementsAnnulés.length;
+
+    // Le compte est encore premium (tier non redescendu) → upgrade possible et cohérent.
+    expect((await entitlement(await loginToken(a.email))).tier).toBe('premium');
+    const { paymentId } = await lancerChangementFormule(await loginToken(a.email));
+    fakeMollie.simulerPaiement(paymentId, 'paid');
+    await (await http()).post('/webhooks/mollie').send({ id: paymentId }).expect(200);
+
+    // Cohérent : pro actif, premium reste annulé (pas de double résiliation Mollie), tier pro.
+    expect((await entitlement(await loginToken(a.email))).tier).toBe('pro');
+    const rows = await abonnementRows(a.compteId);
+    expect(rows.find((r) => r.tier_cible === 'premium')?.statut).toBe('annulé');
+    expect(rows.find((r) => r.tier_cible === 'pro')?.statut).toBe('actif');
+    expect(rows.filter((r) => r.statut === 'actif')).toHaveLength(1);
+    // Premium déjà résilié → aucune nouvelle annulation Mollie émise au webhook.
+    expect(fakeMollie.abonnementsAnnulés.length).toBe(annulésAvant);
+  });
+
+  it('le changement de formule est authentifié (401 sans jeton)', async () => {
+    await (await http()).post('/me/subscription/changer-formule').expect(401);
   });
 });
