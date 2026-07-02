@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CheckoutNavigateurPort, RésultatNavigateurCheckout } from './checkout-browser-port';
-import { lancerUpgrade } from './upgrade-flow';
+import { lancerUpgrade, peutPasserPro } from './upgrade-flow';
 
 /**
  * Test **pur** de l'orchestration d'upgrade (lot 4.2) — avec ports faux (api +
@@ -73,5 +73,29 @@ describe('lancerUpgrade', () => {
     ).rejects.toThrow('réseau');
     expect(navigateur.ouvrir).not.toHaveBeenCalled();
     expect(rafraîchir).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `peutPasserPro` (MOD-001) — le CTA « Passer à Pro » du Profil n'apparaît que
+ * pour un **premium**, et jamais pendant un changement `en_attente`. Décision
+ * **pure** (l'autorité du gating reste serveur) → testable sans React.
+ */
+describe('peutPasserPro', () => {
+  it('vrai pour un premium sans changement en attente', () => {
+    expect(peutPasserPro('premium', 'actif')).toBe(true);
+    expect(peutPasserPro('premium', null)).toBe(true);
+    // Résiliation programmée : on peut toujours upgrader (croisement traité côté serveur).
+    expect(peutPasserPro('premium', 'annulé')).toBe(true);
+  });
+
+  it('faux pour gratuit, pro et tier inconnu (le changement de formule est réservé au premium)', () => {
+    expect(peutPasserPro('gratuit', 'actif')).toBe(false);
+    expect(peutPasserPro('pro', 'actif')).toBe(false);
+    expect(peutPasserPro(null, null)).toBe(false);
+  });
+
+  it('faux quand un changement est déjà en attente (évite un second déclenchement)', () => {
+    expect(peutPasserPro('premium', 'en_attente')).toBe(false);
   });
 });

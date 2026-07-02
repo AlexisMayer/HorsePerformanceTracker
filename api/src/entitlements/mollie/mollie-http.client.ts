@@ -3,6 +3,7 @@ import type {
   CheckoutCree,
   CreerAbonnementParams,
   CreerCheckoutParams,
+  CreerPaiementChangementParams,
   MetadonneesAbonnement,
   MolliePort,
   PaiementMollie,
@@ -75,6 +76,26 @@ export class MollieHttpClient implements MolliePort {
       throw new Error('Mollie: URL de checkout absente de la réponse du paiement.');
     }
     return { paymentId: payment.id, customerId: customer.id, checkoutUrl };
+  }
+
+  async créerPaiementChangement(params: CreerPaiementChangementParams): Promise<CheckoutCree> {
+    // Changement de formule : paiement **sur le client + mandat existants**
+    // (`sequenceType: recurring`) — aucun nouveau client ni mandat n'est créé.
+    const payment = await this.post<MolliePayment>('/payments', {
+      amount: params.montant,
+      description: params.description,
+      redirectUrl: params.redirectUrl,
+      webhookUrl: params.webhookUrl,
+      customerId: params.customerId,
+      sequenceType: 'recurring',
+      ...(params.mandateId ? { mandateId: params.mandateId } : {}),
+      metadata: params.metadata,
+    });
+    // Un paiement `recurring` sur mandat existant n'exige aucune action utilisateur :
+    // Mollie peut ne pas renvoyer d'URL de checkout. On retombe alors sur le deep link
+    // de retour (l'app rebondit puis re-lit l'entitlement ; le **webhook** fait foi).
+    const checkoutUrl = payment._links?.checkout?.href ?? params.redirectUrl;
+    return { paymentId: payment.id, customerId: params.customerId, checkoutUrl };
   }
 
   async lirePaiement(paymentId: string): Promise<PaiementMollie> {

@@ -86,6 +86,43 @@ export function useUpgrade() {
   });
 }
 
+/**
+ * Lance le **changement de formule** premium→pro (MOD-001, « Passer à Pro » du
+ * Profil). **Réutilise** l'orchestration `lancerUpgrade` (checkout → retour →
+ * re-lecture), mais le « checkout » est l'endpoint **`changer-formule`** (paiement
+ * pro sur le **mandat réutilisé** ; le serveur résilie le premium au webhook —
+ * aucun doublon). Au retour : refresh forcé + invalidations → l'écran reflète
+ * l'état *pending* honnête **au-dessus** de l'accès premium conservé (le tier ne
+ * bascule qu'au **webhook** pro — autorité serveur).
+ */
+export function usePasserPro() {
+  const api = useSubscriptionApi();
+  const { refreshSession } = useAuth();
+  const queryClient = useQueryClient();
+  const navigateur = useMemo(() => createNativeCheckoutNavigateurPort(), []);
+
+  return useMutation<UpgradeRésultat, Error, void>({
+    mutationFn: () =>
+      lancerUpgrade(
+        {
+          // Même orchestration que l'upgrade neuf ; seul le point d'entrée diffère
+          // (changement de formule, endpoint dédié) — on ne duplique pas le flux.
+          api: { createCheckout: () => api.changerFormule() },
+          navigateur,
+          retourUrl: retourUrl(),
+          rafraîchir: async () => {
+            await refreshSession();
+            await Promise.all([
+              queryClient.invalidateQueries({ queryKey: ['entitlement'] }),
+              queryClient.invalidateQueries({ queryKey: SUBSCRIPTION_KEY }),
+            ]);
+          },
+        },
+        'pro',
+      ),
+  });
+}
+
 /** Re-lit l'état (force refresh + invalidations) — pour le bouton « Actualiser » du pending. */
 export function useActualiserAbonnement() {
   const { refreshSession } = useAuth();

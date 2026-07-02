@@ -12,12 +12,18 @@
 export type { CheckoutNavigateurPort, RésultatNavigateurCheckout } from './checkout-browser-port';
 export { createNativeCheckoutNavigateurPort } from './native-checkout-browser-port';
 export { createSubscriptionApi, type SubscriptionApi } from './subscription-api';
-export { lancerUpgrade, type UpgradeDeps, type UpgradeRésultat } from './upgrade-flow';
+export {
+  lancerUpgrade,
+  peutPasserPro,
+  type UpgradeDeps,
+  type UpgradeRésultat,
+} from './upgrade-flow';
 export {
   ouvrirGestionMollie,
   useAbonnement,
   useActualiserAbonnement,
   useAnnulerAbonnement,
   useOffres,
+  usePasserPro,
   useUpgrade,
 } from './use-subscription';

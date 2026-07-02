@@ -223,6 +223,7 @@ La **saisie** et la **boucle gratuite** (feed, héros, cartes) ne sont jamais ve
 ### 9.3 Abonnement (côté app)
 - L'app **affiche le statut** (gratuit / premium / pro) et **lit l'entitlement** au login.
 - **Upgrade depuis l'app** : un point d'entrée d'upgrade (depuis les fonctions grisées, §9.4) propose **premium** ou **pro** et ouvre le **checkout Mollie** (navigateur in-app/externe) ; au retour, le tier choisi est **déverrouillé** via l'entitlement. Conforme UE/DMA, sans commission de store (repli IAP documenté côté Stack §6 si une politique de store l'impose hors UE).
+- **Changement de formule premium→pro** (depuis le **Profil**) : un compte **premium** peut **passer à pro** sans se réabonner. Le **mandat SEPA existant est réutilisé** : l'abonnement premium est **résilié** et le pro créé, **sans proration** (tarif plat, Stack §6). Le tier ne bascule qu'au **webhook** confirmant le paiement pro ; l'**accès premium est conservé** pendant toute la bascule (état *pending* honnête, jamais d'état gratuit transitoire). Le **downgrade pro→premium** n'est pas proposé en v1.
 - Gestion et résiliation depuis l'app (renvoi vers l'espace de gestion Mollie).
 
 ### 9.4 Fonctions payantes verrouillées (levier de conversion)
