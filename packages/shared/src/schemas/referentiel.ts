@@ -5,6 +5,7 @@ import { estHauteurValide, HAUTEUR_MAX_CM, HAUTEUR_MIN_CM } from '../enums/haute
 import { TYPES_JALON } from '../enums/jalon';
 import { TYPES_OBSTACLE, TYPES_OBSTACLE_SIMPLE } from '../enums/obstacle';
 import { PROVENANCES, TYPES_SEANCE } from '../enums/seance';
+import { TENDANCES } from '../enums/tendance';
 
 /**
  * Schémas Zod du référentiel (Modèle §0). Les valeurs proviennent des enums :
@@ -19,6 +20,8 @@ export const typeObstacleSimpleSchema = z.enum(TYPES_OBSTACLE_SIMPLE);
 export const typeSéanceSchema = z.enum(TYPES_SEANCE);
 export const provenanceSchema = z.enum(PROVENANCES);
 export const typeJalonSchema = z.enum(TYPES_JALON);
+/** Sens d'une trajectoire dérivée (bilan 4.4, benchmark 5.2) — `hausse`/`stable`/`baisse`. */
+export const tendanceSchema = z.enum(TENDANCES);
 
 /** Hauteur valide : entière, sur un cran du slider (60→160 cm, pas de 5). */
 export const hauteurSchema = z

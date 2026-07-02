@@ -1,4 +1,4 @@
-import type { HeatmapDto } from '@hpt/shared';
+import type { BenchmarkListeDto, BenchmarkSérieDto, HeatmapDto } from '@hpt/shared';
 import { Controller, Get, Param, ParseUUIDPipe, UseGuards } from '@nestjs/common';
 import { type AuthenticatedUser, CurrentUser } from '../auth-account/current-user.decorator';
 import { JwtAccessGuard } from '../auth-account/jwt-access.guard';
@@ -20,8 +20,9 @@ import { AnalyticsService } from './analytics.service';
  * (verrou 4.2). Le `:id` malformé est rejeté en **400** par `ParseUUIDPipe`.
  *
  * Surface de **lecture seule** : `analytics` ne compose que des dérivés (rien
- * n'est écrit). Le **benchmark à combinaison constante** (5.2) ajoutera un endpoint
- * frère **ici**, sous la même garde ; il n'est **pas** construit dans ce lot.
+ * n'est écrit). Le **benchmark à combinaison constante** (5.2) ajoute deux endpoints
+ * **frères ici**, sous la **même** garde `analytique_diagnostic` (§8) : la **liste**
+ * des combinaisons benchmarkables d'un cheval et la **série** d'une identité.
  */
 @Controller()
 @UseGuards(JwtAccessGuard, EntitlementGuard)
@@ -40,5 +41,33 @@ export class AnalyticsController {
     @Param('id', ParseUUIDPipe) chevalId: string,
   ): Promise<HeatmapDto> {
     return this.analytics.heatmap(user.id, chevalId);
+  }
+
+  /**
+   * **Combinaisons benchmarkables** d'un cheval (5.2) : les réutilisables
+   * **instanciées** pour ce cheval (le sélecteur du benchmark), triées par usage.
+   * 403 si le tier ne débloque pas `analytique_diagnostic` ; 404 si cheval étranger.
+   */
+  @Get('horses/:id/benchmark')
+  benchmarkList(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) chevalId: string,
+  ): Promise<BenchmarkListeDto> {
+    return this.analytics.benchmarkList(user.id, chevalId);
+  }
+
+  /**
+   * **Série benchmark** d'une combinaison réutilisable **identifiée** pour un cheval
+   * (5.2, Modèle §8/§9) : sa progression *like-for-like* dans le temps (points
+   * `{ date, taux §7, hauteur }` + tendance). 403 si le tier ne débloque pas
+   * `analytique_diagnostic` ; 404 si cheval **ou** combinaison étrangers au compte.
+   */
+  @Get('horses/:id/benchmark/:combinaisonRef')
+  benchmarkSérie(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) chevalId: string,
+    @Param('combinaisonRef', ParseUUIDPipe) combinaisonRef: string,
+  ): Promise<BenchmarkSérieDto> {
+    return this.analytics.benchmarkSérie(user.id, chevalId, combinaisonRef);
   }
 }

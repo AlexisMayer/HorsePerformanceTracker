@@ -3,6 +3,7 @@ export * from './acces-invite';
 export * from './account-export';
 export * from './ai-bilan';
 export * from './auth';
+export * from './benchmark';
 export * from './champs-techniques';
 export * from './cheval';
 export * from './combinaison';

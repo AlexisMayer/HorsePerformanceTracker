@@ -347,6 +347,72 @@ describe('Plusieurs invités par cheval ; révocable (l’accès cesse)', () => 
   });
 });
 
+describe('Benchmark (5.2) — l’invité reprend la progression à combinaison constante', () => {
+  it('liste + série du cheval partagé, en lecture seule scopée (portée = octroi)', async () => {
+    const coach = await registerWithTier('ga-bench-coach@hpt.test', 'pro');
+    const chevalId = await createHorse(coach, 'Benchie');
+
+    // Le coach enregistre une réutilisable (Double) et l'instancie deux fois
+    // (progression : 3/4 → 4/4) sur le cheval qui sera partagé.
+    const combo = (
+      await (
+        await http()
+      )
+        .post('/combinations')
+        .set('Authorization', `Bearer ${coach.accessToken}`)
+        .send({ nombre_d_éléments: 2, éléments: ['Vertical', 'Oxer'] })
+        .expect(201)
+    ).body;
+    await createSession(coach, chevalId, {
+      type: 'Parcours',
+      obstacles: [
+        {
+          type: 'Combinaison',
+          hauteur: 110,
+          répétitions: 2,
+          barres: 1,
+          refus: 0,
+          combinaison_ref: combo.id,
+        },
+      ],
+    });
+    await createSession(coach, chevalId, {
+      type: 'Parcours',
+      obstacles: [
+        {
+          type: 'Combinaison',
+          hauteur: 110,
+          répétitions: 2,
+          barres: 0,
+          refus: 0,
+          combinaison_ref: combo.id,
+        },
+      ],
+    });
+
+    const { token } = await invite(coach, chevalId, 'bench-guest@hpt.test');
+    const guest = await registerAndLogin('bench-guest@hpt.test');
+    await accept(guest, token);
+
+    // Liste benchmarkable — **invité GRATUIT** (la garde `analytique_diagnostic`
+    // ne s'applique PAS : la portée vient de l'octroi, le propriétaire est pro).
+    const liste = (await authGet(guest, `/guest-access/horses/${chevalId}/benchmark`)).body;
+    expect(liste.cheval_id).toBe(chevalId);
+    expect(liste.combinaisons).toHaveLength(1);
+    expect(liste.combinaisons[0]).toMatchObject({ combinaison_ref: combo.id, n_points: 2 });
+
+    // Série — deux points ordonnés (taux §7 : 0.75 → 1), tendance en hausse.
+    const série = (await authGet(guest, `/guest-access/horses/${chevalId}/benchmark/${combo.id}`))
+      .body;
+    expect(série.points.map((p: { taux: number }) => p.taux)).toEqual([0.75, 1]);
+    expect(série.tendance).toBe('hausse');
+
+    // Via les routes **propriétaire**, l'invité gratuit reste refusé (403, garde 4.1).
+    await authGet(guest, `/horses/${chevalId}/benchmark`).expect(403);
+    await authGet(guest, `/horses/${chevalId}/benchmark/${combo.id}`).expect(403);
+  });
+});
+
 describe('Invitations — doublon, ré-invitation après révocation, jeton invalide, non-authentifié', () => {
   it('refuse un doublon non révoqué (409) mais permet de ré-inviter après révocation', async () => {
     const coach = await registerWithTier('ga-dup-coach@hpt.test', 'pro');

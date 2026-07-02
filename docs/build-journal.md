@@ -3886,3 +3886,201 @@ Commandes : `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build` (tous verts
 | CI | job `ci` (sans DB) + job `db` (`migrate` 0→**0008** + `verify`, e2e 4.6 inclus) | ✅ posé |
 
 ---
+
+## Lot 5.2 — Benchmark à combinaison constante · 2026-07-01
+
+Deuxième (et **dernier**) morceau de la **Phase 5 (Analytique)** — **clôture du
+périmètre v1**. Extension du module **`analytics`** (api) + agrégation pure dans
+**`shared`** + tranche **`app`** : le **benchmark à combinaison constante** (Spec
+§5.3, Modèle §8/§9, UI/UX §6.5), posé **sous la heatmap** (5.1) dans l'écran
+Analytique. On suit dans le temps la **réussite d'une combinaison réutilisable
+identifiée** (structure figée) pour un cheval → l'amélioration est attribuable au
+**couple**, pas à une structure plus facile. `analytics` reste une surface de
+**lecture/composition** : il lit via `sessions` **et** `combinations` (leurs
+**services**, jamais leurs tables — Archi §1/§3) et **réutilise** le **taux §7**
+(0.2). Strictement le lot 5.2 : **pas** de heatmap refaite (5.1, étendue), **pas**
+de CRUD de combinaisons (2.5, réutilisé), **aucun** tarif/verrou refait (4.1/4.2,
+réutilisés).
+
+### Emplacement (décisions tranchées)
+
+- **`shared` (calc + DTO)** — le calcul vit ici, **une seule** implémentation
+  (Archi §2) : `calc/benchmark.ts` (`sérieBenchmark(ref, séances)` : série ordonnée
+  `{ date, taux, hauteur }` + `tendance` ; `combinaisonsInstanciées(séances)` : les
+  identités benchmarkables + décompte per-cheval). Les deux dérivent d'une **brique
+  interne unique** `instanciations()` (mêmes filtres → cohérence garantie) qui
+  **réutilise** `effortsObstacle` (taux §7). `schemas/benchmark.ts` (DTO `Point`/
+  `Série`/`Liste`, miroir Zod). **Hoist** du vocabulaire **`Tendance`** partagé avec
+  le bilan 4.4 : `enums/tendance.ts` (`TENDANCES`) + `tendanceSchema` (référentiel).
+- **`api/src/analytics/`** (extension) — `analytics.service.ts` gagne `benchmarkList`
+  (via `sessions` + `combinations`) et `benchmarkSérie` (via `sessions` +
+  `combinations.findForAccount`) ; `analytics.controller.ts` gagne deux routes
+  **frères** (`GET /horses/:id/benchmark`, `…/benchmark/:combinaisonRef`) sous la
+  **même** garde `analytique_diagnostic` ; `analytics.module.ts` importe désormais
+  **`CombinationsModule`**. **Aucune** table, **aucune** écriture — même posture que
+  la heatmap (5.1).
+- **`api/src/guest-access/`** (extension, **4.6 déjà livré**) — `GuestAccessService`
+  gagne `benchmarkListForGuest`/`benchmarkSérieForGuest` (assert de portée →
+  délègue à `AnalyticsService` scopé au **propriétaire**) ; `guest-consultation.
+  controller.ts` expose les deux routes sous `/guest-access` (portée = octroi, pas
+  le tier de l'invité). La **vue invité reprend le benchmark** en lecture seule
+  scopée — sans reconstruire de surface.
+- **`app/src/analytics/`** (extension) — `benchmark-api.ts` (+ `basePath` 4.6),
+  `use-benchmark.ts` (2 hooks TanStack Query), `benchmark-format.ts` (helpers
+  **purs** testés : courbe/annotation/tendance/mono-point/a11y), `benchmark-curve.
+  tsx` (courbe « maison » 3.2, chiffres tabulaires, hauteur en annotation),
+  `benchmark-section.tsx` (sélecteur de combinaison + courbe + états), `benchmark-
+  apercu.tsx` (esquisse grisée). **`AnalytiqueContenu`** empile heatmap **puis**
+  benchmark dans un seul défilement (réutilisé par le propriétaire **et** l'invité,
+  via `basePath`) ; **`AnalytiqueAperçu`** compose l'aperçu grisé des deux.
+
+### Décisions tranchées (et pourquoi)
+
+- **Série benchmark dans `shared`, réutilisant le taux §7 (jamais réécrit).** Un
+  point = `effortsObstacle` (décomposition §7 : `propres / totaux`, dénominateur
+  `répétitions × nombre_d_éléments` pour la combinaison) → `taux`. **Aucune**
+  arithmétique du §7 n'est dupliquée : la même brique alimente le taux par-obstacle
+  (0.2), la heatmap (5.1) et le benchmark (5.2). Un obstacle non calculable est
+  **ignoré** sans planter (robustesse cohérente heatmap).
+- **Indexation sur `combinaison_ref` — identité stable (2.5), jamais de mélange.**
+  La série filtre sur l'**égalité stricte** du `combinaison_ref`. Comme « modifier
+  une combinaison en crée une **nouvelle** » (2.5, pas de versioning), une structure
+  modifiée porte un **autre** ref → **série distincte**, comparaison *like-for-like*
+  garantie. Un obstacle **dé-lié** (`combinaison_ref = null`, `SET NULL` de 2.5) est
+  **exclu** : il n'est plus rattaché à l'identité suivie (le coût que 2.5 avait
+  consigné pour 5.2 est ici **traité par exclusion**).
+- **Un point = une instanciation `live` ; hauteur en annotation vs taux.** Chaque
+  obstacle Combinaison référençant l'identité dans une séance **`live`** produit un
+  point ; la **hauteur** (la barre du jour, **variable**) voyage en **annotation**,
+  jamais confondue avec le taux (la **structure**, elle, est constante). Le
+  `déclaratif` est **exclu** (§2) ; la **couche contexte n'est jamais agrégée** (§1,
+  elle n'entre pas dans la forme d'entrée). Prouvé e2e (contexte sans effet sur le
+  taux, déclaratif absent de la série).
+- **Portée per-cheval.** La bibliothèque de combinaisons est **au niveau compte**
+  (partagée entre chevaux, 2.5) ; le benchmark suit **UN cheval** → la série ne
+  compte **que** les instanciations du cheval sélectionné (via `sessions.
+  listForHorse`, scopé compte + propriété). Prouvé e2e (même réutilisable instanciée
+  sur 2 chevaux ⇒ 2 séries indépendantes).
+- **Liste benchmarkable triée par usage (per-cheval).** `combinaisonsInstanciées`
+  trie par `n_points` décroissant (« le plus travaillé sur ce cheval »), puis
+  récence, puis ref — le **tri anti-bloat** (§4.3) au sens per-cheval. L'**identité
+  affichable** (`nom` « Double 1 »/« Triple oxer », `nombre_d_éléments`) est **lue
+  via `combinations.list`** (indexée, pas de N+1), jamais la table.
+- **Mono-point géré.** Une combinaison instanciée **une fois** affiche **un point**,
+  `tendance = null` (aucune fausse tendance) + une **invitation à la rejouer**. La
+  `tendance` (≥ 2 points) est le **signe de la pente** (moindres carrés du taux sur
+  l'index), avec une bande `stable` (`EPSILON_TENDANCE`) — honnête, « sans
+  dramatiser » (§7).
+- **Gating = autorité serveur (4.1) ; verrou (4.2) réutilisés.** Les deux endpoints
+  portent la **même** garde `@RequireCapacité('analytique_diagnostic')` +
+  `EntitlementGuard` que la heatmap → **gratuit refusé en 403** (prouvé). L'app
+  grise via **un seul** `LockedFeature` couvrant **toute** l'Analytique (heatmap +
+  benchmark) ; l'appui ouvre l'upgrade **premium**. Le hook n'est monté que dans le
+  contenu débloqué → un gratuit ne déclenche jamais la requête.
+- **Extension de la surface Analytique de 5.1 (pas de refonte).** `AnalytiqueContenu`
+  possède le défilement ; `HeatmapView` devient un **bloc encastrable** (ses états
+  cohabitent dans une carte, la grille/le calc **inchangés**). Le benchmark s'ajoute
+  **dessous**. La **coquille invité** (4.6) et l'écran propriétaire rendent **le même**
+  `AnalytiqueContenu` (paramétré `basePath`) — zéro surface dupliquée (Archi §2/§3).
+
+### Écarts vs cadrage (consignés)
+
+- **`Tendance`/`tendanceSchema` hoistés et partagés avec 4.4 (single source).** Le
+  bilan 4.4 avait déjà **exactement** ce vocabulaire (`['hausse','stable','baisse']`).
+  Plutôt que le dupliquer (« aucun type dupliqué », Archi §2), on l'a **remonté** :
+  `enums/tendance.ts` (`TENDANCES` + type) alimente le type **et** `tendanceSchema`
+  (référentiel). `progression-report.ts` (4.4) l'**importe** désormais au lieu de le
+  redéclarer — refactor **additif et iso-comportement** (les 6 tests du bilan restent
+  verts, `compose-bilan` lit `Tendance` via le barrel). Layering respecté (enums →
+  calc/schemas), aucune inversion.
+- **« Victory Native » du cadrage → convention **réelle** de 3.2 (barres « maison »).**
+  Le cadrage évoque Victory Native/Skia, mais **3.2 a délibérément posé** une courbe
+  **sans dépendance de graphe** (barres `View` normalisées, positions par index,
+  chiffres tabulaires, décorative masquée aux lecteurs d'écran). On **réutilise cette
+  convention livrée** (une seule, cohérente) — **aucune** dépendance native ajoutée
+  (pas d'abstraction prématurée, CI/Metro web inchangés).
+- **Transport des dates.** La **série** porte des `date` (`z.date()`) → l'app
+  **caste** (précédent `metrics` 3.2 : dates ISO au runtime, courbe positionnée par
+  index — l'affichage n'en dépend pas). La **liste** n'a que scalaires/entiers →
+  **re-validée** par Zod au bord (précédent `heatmap` 5.1). Règle nette : *Zod au
+  bord quand pas de `Date` ; cast quand `Date`.*
+- **`HeatmapView` passe de plein-écran (flex 1 + ScrollView propre) à bloc
+  encastrable.** Nécessaire pour empiler le benchmark **sous** la heatmap dans un
+  même défilement. La grille/le format/le calc de 5.1 sont **intacts** ; seuls le
+  conteneur et les états (rendus **dans la carte**) changent. L'écran invité passe de
+  `HeatmapView` direct à `AnalytiqueContenu` (même réutilisation, +benchmark).
+- **Aperçu grisé combiné.** L'aperçu du verrou devient `AnalytiqueAperçu` (esquisse
+  heatmap **+** benchmark) — cohérent avec « **toute** l'Analytique est premium/pro »
+  (§8), sans divulguer de vraie donnée.
+
+### Points laissés ouverts (reports explicites)
+
+- **4.6 déjà livré → la vue invité reprend le benchmark, ici et maintenant.** La
+  surface Analytique est réutilisée **en lecture seule scopée** (contrôleur/‌service
+  invité + `AnalytiqueContenu` via `basePath`), prouvé e2e (invité **gratuit** lit
+  liste+série via l'octroi ; routes propriétaire → 403). Rien n'est reporté côté
+  invité.
+- **Coût de recalcul.** Comme heatmap/metrics, `analytics` **recompose** depuis
+  l'historique `live` complet à chaque lecture (une passe par obstacle). Correct et
+  simple à l'échelle v1 ; un cache/incrémental sera utile si un cheval accumule des
+  centaines de séances.
+- **Tendance = pente des extrêmes lissée (moindres carrés).** Heuristique honnête et
+  déterministe (bande `EPSILON_TENDANCE` tunable en une source) ; une modélisation
+  plus riche (fenêtre, pondération par volume) reste un raffinement ultérieur — sans
+  toucher aux points (le taux §7 par instanciation, lui, est exact).
+- **Phase 5 = dernière phase de la roadmap.** **5.2 clôt le périmètre v1 complet**
+  (Capture → Restitution → Monétisation → Analytique). Reste hors-v1 (déjà consigné
+  ailleurs) : séries propres (jalons 3.1/3.2), cache incrémental, affinements PSP
+  (4.2), fusion coach↔client (4.6).
+
+### Compte rendu — vérifier la DoD
+
+Backend (module `analytics` étendu + garde serveur + réutilisation invité) + tranche
+app (section benchmark sous la heatmap). **Parcours de preuve** (e2e
+`benchmark.spec.ts` + bloc benchmark de `guest-access.spec.ts`, Postgres réel) :
+
+1. **Progression** : enregistrer une réutilisable (`POST /combinations`),
+   l'**instancier** sur plusieurs séances `live` (hauteur seule), puis `GET
+   /horses/:id/benchmark` (liste triée par usage, `n_points`) et `…/benchmark/:ref`
+   (série ordonnée : **taux §7** par date, **hauteur en annotation**, **tendance**).
+2. **Identité stable** : `PATCH /combinations/:ref` (= **nouvelle** identité),
+   instancier la nouvelle → **deux séries distinctes**, **aucun** mélange de ref.
+3. **Per-cheval** : instancier la même réutilisable sur deux chevaux → séries
+   indépendantes (`n_points` par cheval).
+4. **Mono-point** : une instanciation → **un point**, `tendance = null`.
+5. **Exclusions** : une séance `déclaratif` **n'entre pas** ; une séance `live`
+   **avec contexte** ne change **pas** le taux (contexte jamais agrégé).
+6. **Gating** : compte **gratuit** → **403** sur les deux endpoints ; l'app grise via
+   `LockedFeature` → `/upgrade`. **Invité** (4.6) : lit liste+série via
+   `/guest-access/...` (200, portée = octroi) mais reste **403** sur les routes
+   propriétaire.
+
+Commandes : `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build` (tous verts,
+sans DB) ; `pnpm --filter @hpt/api db:verify` (Postgres requis, **job `db` de la
+CI**). Écran : onglet **Analytique** (heatmap **puis** benchmark ; sélecteur de
+combinaison ; courbe + tendance + annotation de hauteur ; mono-point ; état vide =
+invitation) — grisé au gratuit → upgrade ; repris tel quel dans la coquille invité.
+
+### DoD — preuves
+
+| Critère | Vérification | Statut |
+|---|---|---|
+| **Progression d'une combinaison identifiée dans le temps** : série ordonnée, taux §7 par date, hauteur en annotation, courbe = tendance | e2e `benchmark.spec.ts` (3 instanciations 0.5→0.75→1, hauteurs 110/115/120, `tendance: hausse`) ; unités `benchmark.test.ts` | ✅ |
+| **Identité stable** : combinaison **modifiée (nouvelle identité, 2.5)** ⇒ série **distincte**, **aucun** mélange de `combinaison_ref` | e2e (`PATCH` ⇒ nouvel `id` ; séries A/B disjointes) + unit (dédié) ; obstacle **dé-lié** (`ref = null`) **exclu** | ✅ |
+| **Per-cheval** : la série ne compte **que** le cheval sélectionné ; **`déclaratif` exclu** ; **contexte jamais agrégé** | e2e (même réutilisable sur 2 chevaux ⇒ séries indépendantes ; déclaratif absent ; contexte sans effet) + unit | ✅ |
+| **Mono-point géré** : un point, **pas** de fausse tendance | e2e (`n_points = 1`, `tendance: null`) + unit ; app : invitation « rejoue cette combinaison » | ✅ |
+| **Série dans `shared`** (pure, testée, une seule implémentation) réutilisant le **taux §7** | `calc/benchmark.ts` réutilise `effortsObstacle` ; alignement `Point/Série ≡ DTO` (`expectTypeOf`) ; 14 tests | ✅ |
+| **Grisé si gratuit** : endpoint **refusé au gratuit** (garde 4.1) ; app grise + upgrade (verrou 4.2) | e2e : gratuit → **403** (liste **et** série) ; app **un seul** `LockedFeature` (heatmap + benchmark) → `/upgrade?cap=analytique_diagnostic` | ✅ |
+| **Autorisation** : cheval **ou** combinaison étrangers → 404 ; sans jeton → 401 ; ref malformé → 400 | e2e : intrus premium → **404** ; ref d'un autre compte → **404** ; sans jeton → **401** ; `ParseUUIDPipe` → **400** | ✅ |
+| **Réutilisation invité (4.6 livré)** : la vue invité **reprend** le benchmark en lecture seule scopée | e2e `guest-access.spec.ts` : invité **gratuit** lit `/guest-access/…/benchmark(/:ref)` (200, portée = octroi) ; routes propriétaire → **403** ; app `AnalytiqueContenu` via `basePath` | ✅ |
+| Accessibilité (UI/UX §8) | courbe « maison » lisible plein soleil, **chiffres tabulaires** (`StatText`), hauteur en **annotation**, tendance (icône + libellé), contraste AA+ ; courbe décorative masquée, sens via libellé a11y | ✅ |
+| Aucun type d'API dupliqué ; Zod au bord | DTO `@hpt/shared` (`Benchmark*Dto`) ; `Tendance` **partagé** avec 4.4 (single source) ; liste re-validée (pas de `Date`), série castée (`Date`, précédent metrics) | ✅ |
+| Pas de débordement de périmètre | **0** heatmap refaite (5.1 étendue), **0** CRUD combinaison (2.5 réutilisé), **0** tarif/verrou refait (4.1/4.2 réutilisés) ; contexte **jamais** agrégé | ✅ |
+| `pnpm lint` | `biome check .` (426 fichiers) | ✅ exit 0 |
+| `pnpm typecheck` | build `shared` puis `tsc --noEmit` (shared + api + app ; alignement `Point/Série ≡ DTO`, `Tendance ≡ tendanceSchema`) | ✅ vert |
+| `pnpm test` (sans DB) | Vitest — **217 (shared, +14 benchmark)** + 55 (api) + **216 (app, +8 benchmark-format)** | ✅ 488/488 |
+| `pnpm build` | shared (ESM+CJS) + api (nest) + app (typecheck) ; **export Metro web** OK (`/analytique` 34 KB, `/guest/analytique` bundlés) | ✅ vert |
+| `db:verify` (Postgres requis) | Vitest — 163 (lots antérieurs) + **8 (benchmark 5.2 : 7 propriétaire + 1 réutilisation invité)** | ✅ 171/171 |
+| CI | job `ci` (sans DB) + job `db` (`migrate` + `verify`, e2e 5.2 inclus) — **aucune migration** en 5.2 | ✅ |
+
+---
