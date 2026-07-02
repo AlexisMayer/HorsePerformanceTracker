@@ -8,6 +8,11 @@ Ce dépôt est un **monorepo TypeScript de bout en bout** (app mobile + API + co
 partagés). Ce README couvre l'**installation locale** et la **vérification** du projet.
 Le déploiement (prod Scaleway) fera l'objet d'un `DEPLOYMENT.md` séparé.
 
+> ✅ **V1 complète.** L'intégralité du périmètre v1 est livrée — les **six phases** (0 à 5) :
+> Fondations → Compte → Capture → Restitution gratuite → Monétisation → Analytique de
+> diagnostic, en **gratuit**, **premium** et **pro**. Détail en
+> [État d'avancement](#état-davancement).
+
 ---
 
 ## Sommaire
@@ -44,6 +49,12 @@ conception :
 - **TypeScript partout** — un seul langage app/serveur, **types et contrats partagés**,
   aucune duplication.
 
+**Trois niveaux** composent la v1 : **Gratuit** (mono-cheval — onboarding, saisie par
+obstacle, combinaisons réutilisables, feed, graphes héros, cartes partageables, historique) ;
+**Premium** (analytique de diagnostic, bilan de progression, assistant IA) ; **Pro**
+(multi-chevaux, comptes invité en lecture seule). La **saisie** et l'**historique** ne sont
+**jamais** verrouillés.
+
 ---
 
 ## Architecture du monorepo
@@ -52,20 +63,39 @@ conception :
 HorsePerformanceTracker/
 ├── app/                 # Application mobile — Expo / React Native (@hpt/app)
 │   └── src/
-│       ├── app/         # Routes Expo Router : (auth), (tabs), horses, sessions…
+│       ├── app/         # Routes Expo Router : (auth), (tabs), horses, sessions, guest…
 │       ├── auth/        # Client HTTP, contexte de session, secure storage
-│       ├── horses/      # Fiche cheval (UI + API)
+│       ├── onboarding/  # Bifurcation amateur/coach, 1re séance guidée
+│       ├── horses/      # Fiche cheval + archivage (UI + API)
 │       ├── sessions/    # Saisie rapide d'une séance (UI + API)
 │       ├── combinations/# Bibliothèque de combinaisons réutilisables
+│       ├── feed/        # Fil de progression (onglet Feed)
+│       ├── metrics/     # Graphes héros & records
+│       ├── history/     # Historique des séances (onglet Historique)
+│       ├── sharing/     # Cartes partageables (export image)
+│       ├── analytics/   # Heatmap & benchmark (onglet Analytique)
+│       ├── progression-report/ # Bilan de progression
+│       ├── ai-bilan/    # Bilan augmenté par IA
+│       ├── entitlements/# Verrous & capacités (grisage des fonctions payantes)
+│       ├── subscription/# Paywall & upgrade (checkout Mollie)
+│       ├── guest-access/# Invitations & coquille invité (lecture seule)
 │       ├── ui/ theme/   # Composants & tokens de design
 │       └── config.ts    # URL de l'API (EXPO_PUBLIC_API_URL)
 │
 ├── api/                 # Backend — NestJS (@hpt/api)
 │   ├── src/
 │   │   ├── auth-account/# Auth (JWT access/refresh, argon2), vérif e-mail, RGPD
-│   │   ├── horses/      # CRUD cheval, scopé au compte
-│   │   ├── sessions/    # Création/édition/suppression de séance
+│   │   ├── entitlements/# Tiers & gating serveur, abonnement & webhook Mollie
+│   │   ├── horses/      # CRUD cheval + archivage (pro), scopé au compte
+│   │   ├── sessions/    # Création/édition/suppression de séance + historique
 │   │   ├── combinations/# Combinaisons réutilisables
+│   │   ├── feed/        # Fil de progression mono-cheval (faits + jalons)
+│   │   ├── metrics/     # Hauteur maîtrisée, records, courbe héros
+│   │   ├── sharing/     # Cartes de bilan de séance partageables
+│   │   ├── progression-report/ # Bilan de progression (premium/pro)
+│   │   ├── ai-bilan/    # Assistant IA — bilan augmenté (Mistral, premium/pro)
+│   │   ├── analytics/   # Heatmap type × hauteur & benchmark (premium/pro)
+│   │   ├── guest-access/# Comptes invité — accès client lecture seule (pro)
 │   │   ├── health/      # GET /health
 │   │   └── db/          # Connexion Drizzle + schéma (1 fichier par entité)
 │   └── drizzle/         # Migrations SQL générées + snapshots (commitées)
@@ -96,6 +126,7 @@ pourquoi `@hpt/shared` doit être **bâti avant** ses consommateurs (voir l'inst
 | **App**       | Expo SDK 56, React Native 0.85, React 19, Expo Router, TanStack Query |
 | **API**       | NestJS 11 (Express), Passport JWT, argon2, Drizzle ORM 0.45 |
 | **Base**      | PostgreSQL 16 (Docker en dev ; Scaleway en prod) |
+| **Paiement & IA** | Mollie (abonnement premium/pro, webhook = autorité du tier), Mistral Small (bilan augmenté, version épinglée) |
 | **Outillage** | Biome (lint/format), Vitest (tests), drizzle-kit (migrations) |
 
 ---
@@ -174,6 +205,22 @@ défaut conviennent au dev local.
 
 > 🔐 Les secrets du `.env.example` sont des valeurs **de dev uniquement**. En production,
 > ils proviennent du Secret Manager, jamais du dépôt.
+
+**Fonctions payantes (optionnel en dev).** L'upgrade et l'assistant IA tournent **sans clé**
+en local grâce à des adaptateurs de repli — laissez ces variables vides pour développer.
+
+| Variable | Défaut (dev) | Rôle |
+|----------|--------------|------|
+| `MOLLIE_API_KEY` | *(vide)* | Clé Mollie. **Vide ⇒ adaptateur fake** (webhooks simulables localement). |
+| `SUBSCRIPTION_PREMIUM_AMOUNT` / `SUBSCRIPTION_PRO_AMOUNT` | `9.99` / `19.99` | Tarifs mensuels (paramétrables, jamais en dur). |
+| `MOLLIE_WEBHOOK_URL` | `http://localhost:3000/webhooks/mollie` | URL où Mollie poste l'id de paiement (**autorité du tier**). |
+| `MOLLIE_REDIRECT_URL` | `hpt://upgrade-return` | Deep link de retour de l'app après checkout. |
+| `MISTRAL_API_KEY` | *(vide)* | Clé Mistral. **Vide ⇒ stub déterministe** (le sandbox de dev n'atteint pas Mistral). |
+| `AI_BILAN_MODEL_VERSION` | `mistral-small-2409` | Version **épinglée** du modèle (jamais `-latest`). |
+| `AI_BILAN_RATE_LIMIT` | `10` | Générations IA max par utilisateur et par fenêtre glissante. |
+
+> `.env.example` liste ces variables avec des commentaires détaillés (devise, intervalle,
+> fenêtre de rate limiting, URL de gestion Mollie…).
 
 **Côté application mobile**, une variable supplémentaire (optionnelle) pointe l'API :
 
@@ -273,8 +320,8 @@ Commandes **agrégées** (à la racine, sur tout le monorepo) :
 | `pnpm format` | `biome format --write .` — applique le formatage. |
 | `pnpm lint:fix` | `biome check --write .` — corrige ce qui est auto-corrigeable. |
 
-`pnpm test` couvre **les trois packages sans nécessiter Postgres** (à ce jour : **169
-tests** — 70 `shared`, 14 `api`, 85 `app`). C'est la suite qui tourne en CI sur chaque
+`pnpm test` couvre **les trois packages sans nécessiter Postgres** (à ce jour : **488
+tests** — 217 `shared`, 55 `api`, 216 `app`). C'est la suite qui tourne en CI sur chaque
 push / PR.
 
 **Tests de base de données** (intégration, **Postgres requis**) — séparés pour garder
@@ -283,7 +330,7 @@ push / PR.
 ```bash
 docker compose up -d                    # si la base n'est pas déjà lancée
 pnpm --filter @hpt/api db:migrate       # base à jour
-pnpm --filter @hpt/api db:verify        # vérifie schéma, contraintes, cascades, flux auth/CRUD e2e
+pnpm --filter @hpt/api db:verify        # 171 tests e2e : schéma, contraintes, cascades, flux auth/CRUD
 ```
 
 > En **intégration continue**, deux jobs reflètent exactement ces commandes : un job
@@ -327,6 +374,8 @@ Champs attendus : `type` ∈ `amateur | coach`, `password` de 8 à 200 caractèr
 
 Toutes les routes hors auth publique exigent un en-tête `Authorization: Bearer <access_token>`
 et sont **scopées au compte courant** (l'identité vient du jeton, jamais du corps ni de l'URL).
+Les fonctions **premium/pro** sont **gatées côté serveur** (autorité) : un compte gratuit reçoit
+un **403** ; l'app se contente de **griser** puis propose l'upgrade.
 
 ### `auth-account` — `/auth` & `/account`
 
@@ -353,6 +402,8 @@ et sont **scopées au compte courant** (l'identité vient du jeton, jamais du co
 | `GET /horses/:id` | Détail d'un cheval (404 si étranger au compte). |
 | `PATCH /horses/:id` | Édite un cheval (PATCH partiel). |
 | `DELETE /horses/:id` | Supprime un cheval (cascade). |
+| `POST /horses/:id/archive` | Archive (lecture seule, hors quota) — **pro**. |
+| `POST /horses/:id/unarchive` | Désarchive (réversible) — **pro**. |
 
 ### `sessions` — `/horses/:id/sessions` & `/sessions`
 
@@ -360,6 +411,7 @@ et sont **scopées au compte courant** (l'identité vient du jeton, jamais du co
 |-----------------|-------------|
 | `POST /horses/:id/sessions` | Crée une séance (horodatée, **clé d'idempotence** requise). |
 | `GET /horses/:id/sessions` | Liste les séances d'un cheval. |
+| `GET /horses/:id/sessions/history` | Historique enrichi (badge « augmenté » quand présent). |
 | `GET /sessions/:id` | Détail d'une séance. |
 | `PATCH /sessions/:id` | Édite une séance (pose `date_modification`, jamais silencieux). |
 | `DELETE /sessions/:id` | Supprime une séance (cascade des unités atomiques). |
@@ -372,6 +424,59 @@ et sont **scopées au compte courant** (l'identité vient du jeton, jamais du co
 | `GET /combinations` | Liste la bibliothèque, triée par usage. |
 | `PATCH /combinations/:id` | « Édition » = crée une **nouvelle** (l'ancienne reste intacte). |
 | `DELETE /combinations/:id` | Supprime ; les obstacles liés passent en `SET NULL`. |
+
+### `feed` · `metrics` · `sharing` — restitution gratuite
+
+| Méthode & route | Description |
+|-----------------|-------------|
+| `GET /horses/:id/feed` | Fil de progression (faits + contexte en légende, jalons). |
+| `GET /horses/:id/metrics` | Hauteur maîtrisée, records/jalons, points de la courbe héros. |
+| `GET /sessions/:id/card` | Carte de bilan de séance partageable (**gratuit, jamais verrouillé**). |
+
+### `entitlements` — tiers, abonnement & Mollie
+
+| Méthode & route | Auth | Description |
+|-----------------|:----:|-------------|
+| `GET /me/entitlement` | ✅ | Tier courant + capacités débloquées. |
+| `GET /me/subscription/offres` | ✅ | Tarifs premium/pro (montants lus de la config). |
+| `POST /me/subscription/checkout` | ✅ | Démarre un checkout Mollie (n'élève **pas** le tier). |
+| `GET /me/subscription` | ✅ | État d'abonnement + URL de gestion Mollie. |
+| `POST /me/subscription/annuler` | ✅ | Résilie l'abonnement courant. |
+| `POST /webhooks/mollie` | — | Webhook Mollie — **seule autorité** qui élève/abaisse le tier. |
+
+### Fonctions premium/pro (gatées serveur — 403 au gratuit)
+
+| Méthode & route | Capacité requise | Description |
+|-----------------|------------------|-------------|
+| `POST /horses/:id/progression-report` | `bilan_progression` | Génère un bilan de progression (curation période/indicateurs, sortie lien/PDF). |
+| `POST /sessions/:id/ai-bilan` | `bilan_augmenté` | Génère (à la demande) le bilan augmenté par IA ; rate-limité. |
+| `GET /sessions/:id/ai-bilan` | `bilan_augmenté` | Relit le bilan IA persisté (aucun appel IA ; 404 si aucun). |
+| `GET /horses/:id/ai-bilan` | `bilan_augmenté` | Séances possédant un bilan augmenté (slot ✦ de l'historique). |
+| `GET /horses/:id/heatmap` | `analytique_diagnostic` | Heatmap type d'obstacle × hauteur (exacte, par obstacle). |
+| `GET /horses/:id/benchmark` | `analytique_diagnostic` | Combinaisons instanciées, triées par usage (`n_points`). |
+| `GET /horses/:id/benchmark/:ref` | `analytique_diagnostic` | Progression d'une combinaison constante dans le temps (série + tendance). |
+
+### `guest-access` — comptes invité (pro)
+
+**Côté propriétaire** (garde `comptes_invité`) :
+
+| Méthode & route | Description |
+|-----------------|-------------|
+| `POST /horses/:id/guest-access` | Invite un client sur **un** cheval (plusieurs invitations possibles). |
+| `GET /horses/:id/guest-access` | Liste les accès invité d'un cheval. |
+| `DELETE /guest-access/:accessId` | Révoque un accès. |
+
+**Côté invité** (session invité, **lecture seule** scopée à un cheval) :
+
+| Méthode & route | Description |
+|-----------------|-------------|
+| `POST /guest-access/accept` | Accepte une invitation (onboarding invité). |
+| `GET /guest-access/me` | Contexte invité courant (cheval consultable). |
+| `GET /guest-access/horses/:id/feed` | Feed du cheval consulté. |
+| `GET /guest-access/horses/:id/metrics` | Métriques du cheval consulté. |
+| `GET /guest-access/horses/:id/sessions/history` | Historique du cheval consulté. |
+| `GET /guest-access/horses/:id/heatmap` | Heatmap (selon l'octroi). |
+| `GET /guest-access/horses/:id/benchmark[/:ref]` | Benchmark (selon l'octroi). |
 
 ---
 
@@ -413,17 +518,26 @@ Cibler un package : `pnpm --filter @hpt/<api|app|shared> <script>`.
 
 ## État d'avancement
 
-Le projet est construit par **lots à dépendances**, chacun validé puis consigné dans
-`docs/build-journal.md`. À ce jour, **les phases 0 à 2 sont livrées** :
+Le projet est construit par **lots à dépendances**, chacun validé (DoD prouvée par test)
+puis consigné dans `docs/build-journal.md`. **La v1 est complète : les six phases (0 à 5)
+sont livrées.**
 
 - **Phase 0 — Fondations** : monorepo & outillage, contrats `shared`, schéma DB & migrations.
 - **Phase 1 — Compte & accès** : auth (JWT, argon2, rotation), vérification e-mail & reset,
   RGPD (suppression/export), coquille app & navigation.
 - **Phase 2 — Capture** : fiche cheval, séance (création, saisie rapide, édition/suppression),
   combinaisons réutilisables.
+- **Phase 3 — Restitution gratuite** : feed mono-cheval, métriques & graphes héros, cartes
+  partageables, historique, onboarding amateur/coach.
+- **Phase 4 — Monétisation** : tiers & gating serveur, upgrade in-app & Mollie, archivage
+  cheval (pro), bilan de progression, assistant IA (bilan augmenté), comptes invité (pro).
+- **Phase 5 — Analytique de diagnostic** : heatmap type × hauteur, benchmark à combinaison
+  constante (premium/pro, grisés au gratuit).
 
-Les phases suivantes (restitution gratuite, monétisation, analytique) sont décrites dans la
-roadmap mais **pas encore implémentées**.
+Reste **hors v1** (raffinements consignés dans le journal) : séries de graphes plus riches,
+cache analytique incrémental, affinements PSP, fusion coach ↔ client. Le **déploiement**
+(EAS, conteneurisation de l'API, infra Scaleway, secrets de prod) fera l'objet d'un
+`DEPLOYMENT.md`.
 
 ---
 
