@@ -45,7 +45,7 @@ const DEV_DEFAULTS = {
   intervalle: '1 month',
   montantPremium: '9.99',
   montantPro: '19.99',
-  webhookUrl: 'http://localhost:3000/webhooks/mollie',
+  webhookUrl: 'http://10.0.0.9:3000/webhooks/mollie',
   redirectUrl: 'hpt://upgrade-return',
 } as const;
 
